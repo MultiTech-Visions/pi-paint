@@ -1,0 +1,24 @@
+{
+    "display": {
+        "control_display": 0,
+        "projector_display": 1
+    },
+    "projector": {
+        "width": 854,
+        "height": 480
+    },
+    "camera": {
+        "device_index": 0,
+        "width": 854,
+        "height": 480
+    },
+    "calibration": {
+        "gray_code_wait_ms": 500,
+        "capture_delay_ms": 300
+    },
+    "agent": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "refresh_interval_sec": 15
+    }
+}
