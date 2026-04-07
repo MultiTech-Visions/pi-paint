@@ -2,6 +2,7 @@ from PyQt5.QtWidgets import QMainWindow, QLabel
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap, QColor, QPainter
 import numpy as np
+import cv2
 
 
 class ProjectorWindow(QMainWindow):
@@ -69,4 +70,28 @@ class ProjectorWindow(QMainWindow):
         for y in range(self.proj_h):
             for x in range(self.proj_w):
                 img[y, x, 2] = int(255 * ((x + y) / (self.proj_w + self.proj_h)))
+        self.show_image(img)
+
+    def show_checkerboard(self, cell_size=40):
+        """Display a checkerboard pattern for visual alignment checks."""
+        img = np.zeros((self.proj_h, self.proj_w), dtype=np.uint8)
+        for y in range(self.proj_h):
+            for x in range(self.proj_w):
+                if ((x // cell_size) + (y // cell_size)) % 2 == 0:
+                    img[y, x] = 255
+        self.show_pattern(img)
+
+    def show_crosshair(self):
+        """Display crosshair + border pattern for alignment verification."""
+        img = np.zeros((self.proj_h, self.proj_w, 3), dtype=np.uint8)
+        # Border rectangle
+        cv2.rectangle(img, (2, 2), (self.proj_w - 3, self.proj_h - 3), (255, 255, 255), 2)
+        # Center crosshair
+        cx, cy = self.proj_w // 2, self.proj_h // 2
+        cv2.line(img, (cx - 40, cy), (cx + 40, cy), (0, 255, 0), 2)
+        cv2.line(img, (cx, cy - 40), (cx, cy + 40), (0, 255, 0), 2)
+        # Corner markers
+        for x, y in [(20, 20), (self.proj_w - 20, 20),
+                      (20, self.proj_h - 20), (self.proj_w - 20, self.proj_h - 20)]:
+            cv2.circle(img, (x, y), 8, (255, 0, 0), 2)
         self.show_image(img)
