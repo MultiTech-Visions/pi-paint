@@ -99,14 +99,43 @@ class ControlPanel(QMainWindow):
         cam_w = self.config["camera"]["width"]
         cam_h = self.config["camera"]["height"]
 
-        self.camera = cv2.VideoCapture(cam_idx)
+        # Try the configured index first, then fall back to scanning a few
+        # indices. On Linux/Raspberry Pi, V4L2 devices may appear at /dev/video0
+        # but also at higher indices (e.g. /dev/video10 for libcamera bridges),
+        # so we explicitly prefer the V4L2 backend and probe a small range.
+        candidates = [cam_idx] + [i for i in range(0, 11) if i != cam_idx]
+        backends = [cv2.CAP_V4L2, cv2.CAP_ANY]
+
+        self.camera = None
+        opened_idx = None
+        for idx in candidates:
+            for backend in backends:
+                cap = cv2.VideoCapture(idx, backend)
+                if cap.isOpened():
+                    # Verify we can actually read a frame; some devices open
+                    # but immediately fail to deliver frames.
+                    ok, _ = cap.read()
+                    if ok:
+                        self.camera = cap
+                        opened_idx = idx
+                        break
+                    cap.release()
+                else:
+                    cap.release()
+            if self.camera is not None:
+                break
+
+        if self.camera is None:
+            self.status.showMessage(
+                f"ERROR: Cannot open camera at index {cam_idx} "
+                f"(tried indices 0-10; check that a camera is connected and "
+                f"that /dev/video* exists)"
+            )
+            return
+
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, cam_w)
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_h)
-
-        if not self.camera.isOpened():
-            self.status.showMessage(f"ERROR: Cannot open camera at index {cam_idx}")
-            self.camera = None
-            return
+        cam_idx = opened_idx
 
         self.camera_timer.start(33)  # ~30fps
         self.btn_cam_start.setEnabled(False)
