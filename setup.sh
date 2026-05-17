@@ -29,7 +29,9 @@ sudo apt install -y \
     libv4l-dev \
     libgl1-mesa-dev \
     libglib2.0-0 \
-    v4l-utils
+    v4l-utils \
+    python3-picamera2 \
+    python3-libcamera
 
 # Hailo runtime
 echo "[2/5] Ensuring Hailo runtime is installed..."
@@ -61,6 +63,8 @@ echo -n "Hailo: "
 python3 -c "import hailo_platform; print('OK')" 2>/dev/null || echo "NOT FOUND (install separately if needed)"
 echo -n "Anthropic SDK: "
 python3 -c "import anthropic; print(anthropic.__version__)"
+echo -n "Picamera2: "
+python3 -c "from picamera2 import Picamera2; print('OK')" 2>/dev/null || echo "NOT FOUND (Pi camera will not work; USB camera fallback still available)"
 
 # Create double-clickable desktop shortcut
 echo ""
