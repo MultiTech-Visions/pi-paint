@@ -9,6 +9,49 @@ import cv2
 import numpy as np
 from calibration import CalibrationEngine
 
+try:
+    from picamera2 import Picamera2
+    _HAS_PICAMERA2 = True
+except Exception:
+    _HAS_PICAMERA2 = False
+
+
+class _Picamera2Source:
+    """Adapter giving Picamera2 a cv2.VideoCapture-like read/release API
+    (returns BGR frames so the rest of the pipeline is unchanged)."""
+
+    def __init__(self, width, height):
+        self.cam = Picamera2()
+        cfg = self.cam.create_video_configuration(
+            main={"size": (width, height), "format": "RGB888"}
+        )
+        self.cam.configure(cfg)
+        self.cam.start()
+
+    def read(self):
+        try:
+            frame = self.cam.capture_array("main")
+            # Picamera2's "RGB888" actually comes out as BGR in numpy order,
+            # which matches what the rest of the code (cv2.cvtColor BGR2RGB)
+            # expects, so we return it as-is.
+            return True, frame
+        except Exception:
+            return False, None
+
+    def release(self):
+        try:
+            self.cam.stop()
+            self.cam.close()
+        except Exception:
+            pass
+
+    def set(self, *args, **kwargs):
+        # Resolution is fixed at configure() time; ignore cv2-style set() calls.
+        pass
+
+    def isOpened(self):
+        return True
+
 
 class ControlPanel(QMainWindow):
     def __init__(self, config, screen, projector_win):
@@ -99,48 +142,59 @@ class ControlPanel(QMainWindow):
         cam_w = self.config["camera"]["width"]
         cam_h = self.config["camera"]["height"]
 
-        # Try the configured index first, then fall back to scanning a few
-        # indices. On Linux/Raspberry Pi, V4L2 devices may appear at /dev/video0
-        # but also at higher indices (e.g. /dev/video10 for libcamera bridges),
-        # so we explicitly prefer the V4L2 backend and probe a small range.
-        candidates = [cam_idx] + [i for i in range(0, 11) if i != cam_idx]
-        backends = [cv2.CAP_V4L2, cv2.CAP_ANY]
-
+        # Prefer Picamera2 (libcamera) when available — required for the
+        # Pi 5 / Bookworm camera stack where there is no plain V4L2 capture
+        # device (only ISP/codec nodes show up in /dev/video*). Fall back to
+        # OpenCV's V4L2 backend for USB webcams.
         self.camera = None
-        opened_idx = None
-        for idx in candidates:
-            for backend in backends:
-                cap = cv2.VideoCapture(idx, backend)
-                if cap.isOpened():
-                    # Verify we can actually read a frame; some devices open
-                    # but immediately fail to deliver frames.
-                    ok, _ = cap.read()
-                    if ok:
-                        self.camera = cap
-                        opened_idx = idx
-                        break
-                    cap.release()
+        source_desc = ""
+
+        if _HAS_PICAMERA2:
+            try:
+                self.camera = _Picamera2Source(cam_w, cam_h)
+                ok, _ = self.camera.read()
+                if not ok:
+                    self.camera.release()
+                    self.camera = None
                 else:
-                    cap.release()
-            if self.camera is not None:
-                break
+                    source_desc = "Picamera2"
+            except Exception as e:
+                self.status.showMessage(f"Picamera2 init failed: {e}; trying V4L2")
+                self.camera = None
 
         if self.camera is None:
-            self.status.showMessage(
-                f"ERROR: Cannot open camera at index {cam_idx} "
-                f"(tried indices 0-10; check that a camera is connected and "
-                f"that /dev/video* exists)"
-            )
-            return
+            candidates = [cam_idx] + [i for i in range(0, 36) if i != cam_idx]
+            for idx in candidates:
+                for backend in (cv2.CAP_V4L2, cv2.CAP_ANY):
+                    cap = cv2.VideoCapture(idx, backend)
+                    if cap.isOpened():
+                        ok, _ = cap.read()
+                        if ok:
+                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_w)
+                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_h)
+                            self.camera = cap
+                            source_desc = f"V4L2 /dev/video{idx}"
+                            break
+                    cap.release()
+                if self.camera is not None:
+                    break
 
-        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, cam_w)
-        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_h)
-        cam_idx = opened_idx
+        if self.camera is None:
+            hint = (
+                "no camera could be opened. Install picamera2 "
+                "(`sudo apt install -y python3-picamera2`) if using the Pi "
+                "camera, or check that a USB camera is connected."
+            ) if not _HAS_PICAMERA2 else (
+                "Picamera2 is installed but failed to open the camera. "
+                "Check `libcamera-hello` works from the terminal."
+            )
+            self.status.showMessage(f"ERROR: Cannot open camera — {hint}")
+            return
 
         self.camera_timer.start(33)  # ~30fps
         self.btn_cam_start.setEnabled(False)
         self.btn_cam_stop.setEnabled(True)
-        self.status.showMessage(f"Camera started (index {cam_idx})")
+        self.status.showMessage(f"Camera started ({source_desc})")
 
     def _stop_camera(self):
         self.camera_timer.stop()
