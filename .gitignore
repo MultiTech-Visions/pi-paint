@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+vj/venv/
+vj/assets/clips/*.mp4
+vj/assets/clips/*.mov
+vj/assets/overlays/*.mp4
+vj/assets/overlays/*.mov
