@@ -7,6 +7,10 @@
 set -e
 cd "$(dirname "$0")"
 
+# Defensive: ensure all launcher scripts are executable, in case the
+# ZIP extractor stripped the bit.
+chmod +x ./*.sh 2>/dev/null || true
+
 echo ""
 echo "============================================================"
 echo "  pi-paint VJ — Setup"
