@@ -37,9 +37,8 @@ EOF
   echo "  ✓ $name"
 }
 
-write_launcher "VJ — Windowed"    "Run Windowed.sh"    "pi-paint VJ in a window"
-write_launcher "VJ — Fullscreen"  "Run Fullscreen.sh"  "pi-paint VJ fullscreen on primary display"
-write_launcher "VJ — Projector"   "Run Projector.sh"   "pi-paint VJ fullscreen on display 1 (projector)"
+write_launcher "Start VJ"             "Start VJ.sh"              "Dual display: control HUD + projector output"
+write_launcher "VJ Test (single)"     "Test (single screen).sh"  "Single screen test mode — both windows on primary"
 
 echo ""
 echo "Done. Look for the icons on your desktop."

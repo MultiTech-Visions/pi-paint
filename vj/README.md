@@ -22,16 +22,38 @@ Then double-click these files in order:
    the file manager (drag and drop works). See the READMEs in those
    folders for what to put there.
 
-3. To launch, double-click one of the **"Run ..."** scripts and choose
-   **"Execute"**:
-   - **`Run Windowed.sh`** — small 854×480 window. Good for testing.
-   - **`Run Fullscreen.sh`** — fullscreen on the Pi's primary display.
-   - **`Run Projector.sh`** — fullscreen on the second display
-     (display index 1). Use this once the projector is plugged in.
+3. To launch, double-click one of these scripts and choose **"Execute"**:
+   - **`Start VJ.sh`** — **dual display** (the main mode). Opens a
+     control HUD on the small screen (display 0) showing live preview,
+     current state, and the key cheat sheet; sends the visual output
+     fullscreen to the projector (display 1).
+   - **`Test (single screen).sh`** — both windows on the primary
+     display, no fullscreen. Use this when no projector is connected.
 
 4. (Optional) Double-click **`Install Desktop Shortcuts.sh`** to drop
-   three launcher icons on your desktop so you don't have to navigate
-   into this folder every time.
+   launcher icons on your desktop so you don't have to navigate into
+   this folder every time.
+
+### Display layout
+
+The default `Start VJ.sh` assumes:
+
+| Display index | Role          | What's shown                              |
+|---------------|---------------|-------------------------------------------|
+| `0` (primary) | Small screen  | Control HUD: preview, state, key map      |
+| `1` (secondary) | Projector   | Fullscreen visual output                  |
+
+If your displays are wired up the other way, open `Start VJ.sh` in a
+text editor and swap `OUTPUT_DISPLAY` and `CONTROL_DISPLAY` at the top.
+
+### Keyboard focus
+
+The keyboard sends keys to whichever window has focus — click into the
+**control HUD** window once when you start a set and leave it focused.
+Mouse / trackpad XY (for tuning live FX) also reports relative to the
+focused window, so if you hover over the HUD the FX will respond to
+where your cursor is in the HUD. Hover over the output window instead
+if you want the cursor position to map to the projected image.
 
 ### If "Execute" doesn't appear
 
@@ -48,10 +70,16 @@ has the right option — pick **"Execute"** for the Run scripts and
 ```bash
 cd vj
 ./setup.sh                                # same as the double-click
-./venv/bin/python main.py                 # windowed
-./venv/bin/python main.py --fullscreen
-./venv/bin/python main.py --fullscreen --display 1
-./venv/bin/python main.py --width 1280 --height 720
+
+# Dual display — control HUD on display 0, fullscreen output on display 1
+./venv/bin/python main.py --fullscreen --output-display 1 \
+                          --control --control-display 0
+
+# Single window, no HUD
+./venv/bin/python main.py
+
+# Bump rendered resolution
+./venv/bin/python main.py --width 1280 --height 720 --fullscreen --output-display 1
 ```
 
 ## Keyboard map
@@ -111,8 +139,15 @@ ffmpeg -i input.mp4 -vf scale=854:480 -c:v libx264 -preset slow -crf 22 -an outp
 ## Architecture
 
 ```
-main.py        argparse + pygame init + main loop wiring
-engine.py      Engine class: state, render pipeline, public actions
+main.py        argparse + pygame init + main loop wiring; opens the
+               output window via pygame.display + a second SDL2
+               Window+Renderer for the control HUD
+engine.py      Engine class: state, render pipeline, public actions.
+               Splits compose_frame() (numpy) from blit_to_output()
+               (pygame) so the same frame can feed both windows.
+control.py     ControlWindow: preview, state badges, cached key
+               cheat sheet. Renders to an offscreen Surface and
+               uploads as a Texture each frame.
 effects.py     Generative + transformative numpy/OpenCV effects
 clips.py       ClipPool: lazy MP4 loader keyed by slot index
 keymap.py      Pygame key → engine action dispatch table

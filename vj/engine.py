@@ -153,7 +153,8 @@ class Engine:
             return rgb_split(frame, offset=28)
         return frame
 
-    def render(self):
+    def compose_frame(self):
+        """Build the next output frame without blitting."""
         if self.blackout:
             frame = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         elif self.freeze and self.frozen_frame is not None:
@@ -172,14 +173,22 @@ class Engine:
 
         if not self.freeze:
             self.prev_frame = frame
+        return frame
 
+    def blit_to_output(self, frame):
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
         if self.screen.get_size() != (self.w, self.h):
             surface = pygame.transform.scale(surface, self.screen.get_size())
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
 
-    def run(self):
+    def render(self):
+        """Convenience: compose + blit (used when there is no control window)."""
+        frame = self.compose_frame()
+        self.blit_to_output(frame)
+        return frame
+
+    def run(self, control=None):
         from keymap import dispatch
         while self.running:
             for event in pygame.event.get():
@@ -187,7 +196,10 @@ class Engine:
                     self.running = False
                 elif event.type == pygame.KEYDOWN:
                     dispatch(self, event.key, event.mod)
-            self.render()
+            frame = self.compose_frame()
+            self.blit_to_output(frame)
+            if control is not None:
+                control.render(frame)
             self.clock.tick(self.cfg.fps)
         self.clips.release_all()
         self.overlays.release_all()
