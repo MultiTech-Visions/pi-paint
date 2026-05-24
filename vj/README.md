@@ -8,26 +8,51 @@ This is **Phase 1**: manual mode only, no audio. Phase 2 (aubio beat
 detection + auto mode) and Phase 3 (Hailo person-matte) are planned but
 not built yet.
 
-## Install
+## Quick start (no terminal needed)
+
+On the Pi, open the file manager and navigate to this `vj/` folder.
+Then double-click these files in order:
+
+1. **`setup.sh`** — choose **"Execute in Terminal"** when prompted.
+   Installs SDL2/OpenGL system libs, creates a Python virtualenv,
+   installs pygame + opencv + numpy. Takes 2-5 minutes the first time.
+   Safe to re-run; subsequent runs are a no-op.
+
+2. Drop `.mp4` files into `assets/clips/` and `assets/overlays/` using
+   the file manager (drag and drop works). See the READMEs in those
+   folders for what to put there.
+
+3. To launch, double-click one of the **"Run ..."** scripts and choose
+   **"Execute"**:
+   - **`Run Windowed.sh`** — small 854×480 window. Good for testing.
+   - **`Run Fullscreen.sh`** — fullscreen on the Pi's primary display.
+   - **`Run Projector.sh`** — fullscreen on the second display
+     (display index 1). Use this once the projector is plugged in.
+
+4. (Optional) Double-click **`Install Desktop Shortcuts.sh`** to drop
+   three launcher icons on your desktop so you don't have to navigate
+   into this folder every time.
+
+### If "Execute" doesn't appear
+
+Raspberry Pi OS file manager → **Edit → Preferences → General** →
+turn ON **"Don't ask options on launch executable file"** (then a
+single double-click runs them).
+
+If that's not what you want, the dialog that pops up on double-click
+has the right option — pick **"Execute"** for the Run scripts and
+**"Execute in Terminal"** for setup so you can see install progress.
+
+## Terminal install / launch (if you prefer)
 
 ```bash
 cd vj
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./setup.sh                                # same as the double-click
+./venv/bin/python main.py                 # windowed
+./venv/bin/python main.py --fullscreen
+./venv/bin/python main.py --fullscreen --display 1
+./venv/bin/python main.py --width 1280 --height 720
 ```
-
-## Run
-
-```bash
-python main.py                       # windowed, primary display
-python main.py --fullscreen          # fullscreen on primary
-python main.py --fullscreen --display 1   # fullscreen on second display (the projector)
-python main.py --width 1280 --height 720  # bump output res
-```
-
-Drop `.mp4` files into `assets/clips/` and `assets/overlays/` before
-launching — see the READMEs in those folders.
 
 ## Keyboard map
 
