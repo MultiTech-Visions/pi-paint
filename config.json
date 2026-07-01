@@ -16,6 +16,14 @@
         "gray_code_wait_ms": 500,
         "capture_delay_ms": 300
     },
+    "painting": {
+        "fps": 30,
+        "mood": "aurora",
+        "memory_seconds": 12,
+        "sensitivity": 1.0,
+        "motion_mist": true,
+        "dreams": true
+    },
     "agent": {
         "provider": "anthropic",
         "model": "claude-sonnet-4-20250514",

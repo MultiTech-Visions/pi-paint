@@ -1,13 +1,15 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QPushButton, QLabel, QStatusBar,
-    QProgressBar, QGroupBox, QComboBox
+    QProgressBar, QGroupBox, QComboBox, QSlider, QCheckBox
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QColor
 import cv2
 import numpy as np
 from calibration import CalibrationEngine
+from paint_engine import PaintEngine
+from paint_canvas import MOOD_NAMES
 
 
 class ControlPanel(QMainWindow):
@@ -33,6 +35,14 @@ class ControlPanel(QMainWindow):
         self.calibration.scan_finished.connect(self._on_calibration_finished)
         self.calibration.preview_ready.connect(self._on_calibration_preview)
 
+        # Light painting engine
+        self.last_frame = None
+        self.paint_engine = PaintEngine(
+            config, self._latest_camera_frame, projector_win, self.calibration
+        )
+        self.paint_engine.preview_ready.connect(self._on_paint_preview)
+        self.paint_engine.status.connect(self._on_paint_status)
+
         # Status bar
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -49,6 +59,7 @@ class ControlPanel(QMainWindow):
         # Build tabs
         self.tabs.addTab(self._build_camera_tab(), "Camera")
         self.tabs.addTab(self._build_calibration_tab(), "Calibration")
+        self.tabs.addTab(self._build_painting_tab(), "Light Painting")
         self.tabs.addTab(self._build_scene_tab(), "Scene Analysis")
         self.tabs.addTab(self._build_projection_tab(), "Projection")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
@@ -118,6 +129,7 @@ class ControlPanel(QMainWindow):
         if self.camera is not None:
             self.camera.release()
             self.camera = None
+        self.last_frame = None
         self.camera_preview.setText("Camera stopped")
         self.btn_cam_start.setEnabled(True)
         self.btn_cam_stop.setEnabled(False)
@@ -130,6 +142,7 @@ class ControlPanel(QMainWindow):
         if not ret:
             self.status.showMessage("WARNING: Failed to read camera frame")
             return
+        self.last_frame = frame
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame_rgb.shape
         img = QImage(frame_rgb.data, w, h, ch * w, QImage.Format_RGB888)
@@ -147,6 +160,10 @@ class ControlPanel(QMainWindow):
             return False, None
         ret, frame = self.camera.read()
         return ret, frame
+
+    def _latest_camera_frame(self):
+        """Most recent frame from the preview loop (no device contention)."""
+        return self.last_frame
 
     # ── Calibration Tab ────────────────────────────────────────
 
@@ -249,6 +266,11 @@ class ControlPanel(QMainWindow):
         if self.calibration.is_scanning:
             return
 
+        # Painting would fight the scan for the projector — pause it
+        self._painting_was_active = self.paint_engine.is_running
+        if self._painting_was_active:
+            self._stop_painting()
+
         self.btn_start_scan.setEnabled(False)
         self.btn_cancel_scan.setEnabled(True)
         self.calib_progress.setVisible(True)
@@ -287,6 +309,13 @@ class ControlPanel(QMainWindow):
 
         if success:
             self._update_calib_viz()
+            if self.paint_engine.is_running:
+                self.paint_engine.refresh_calibration()
+
+        # Resume painting if the scan interrupted it
+        if getattr(self, '_painting_was_active', False):
+            self._painting_was_active = False
+            self._start_painting()
 
     def _on_calibration_preview(self, rgb_image):
         """Handle a new calibration preview image."""
@@ -338,6 +367,132 @@ class ControlPanel(QMainWindow):
         )
         label.setPixmap(scaled)
 
+    # ── Light Painting Tab ──────────────────────────────────────
+
+    def _build_painting_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.paint_preview = QLabel("The canvas is dark.\n\nStart painting to wake it up.")
+        self.paint_preview.setAlignment(Qt.AlignCenter)
+        self.paint_preview.setMinimumSize(640, 360)
+        self.paint_preview.setStyleSheet("background-color: #0a0a12; color: #667;")
+        layout.addWidget(self.paint_preview)
+
+        # ── Main controls ──
+        btn_row = QHBoxLayout()
+
+        self.btn_paint_start = QPushButton("Begin Painting")
+        self.btn_paint_start.clicked.connect(self._start_painting)
+        btn_row.addWidget(self.btn_paint_start)
+
+        self.btn_paint_stop = QPushButton("Stop")
+        self.btn_paint_stop.clicked.connect(self._stop_painting)
+        self.btn_paint_stop.setEnabled(False)
+        btn_row.addWidget(self.btn_paint_stop)
+
+        self.btn_release = QPushButton("Let It Go ✨")
+        self.btn_release.setToolTip("The painting dissolves upward into fireflies")
+        self.btn_release.clicked.connect(self.paint_engine.release)
+        btn_row.addWidget(self.btn_release)
+
+        layout.addLayout(btn_row)
+
+        # ── The feel ──
+        feel_group = QGroupBox("The Feel")
+        feel_layout = QVBoxLayout(feel_group)
+
+        mood_row = QHBoxLayout()
+        mood_row.addWidget(QLabel("Mood:"))
+        self.paint_mood = QComboBox()
+        self.paint_mood.addItems([m.capitalize() for m in MOOD_NAMES])
+        self.paint_mood.currentIndexChanged.connect(self._on_mood_changed)
+        mood_row.addWidget(self.paint_mood)
+        mood_row.addStretch()
+        feel_layout.addLayout(mood_row)
+
+        mem_row = QHBoxLayout()
+        mem_row.addWidget(QLabel("Memory:"))
+        self.paint_memory = QSlider(Qt.Horizontal)
+        self.paint_memory.setRange(2, 30)
+        self.paint_memory.setValue(int(self.config.get("painting", {}).get("memory_seconds", 12)))
+        self.paint_memory.valueChanged.connect(self._on_memory_changed)
+        mem_row.addWidget(self.paint_memory)
+        self.paint_memory_label = QLabel(f"{self.paint_memory.value()}s")
+        self.paint_memory_label.setMinimumWidth(36)
+        mem_row.addWidget(self.paint_memory_label)
+        feel_layout.addLayout(mem_row)
+
+        sens_row = QHBoxLayout()
+        sens_row.addWidget(QLabel("Sensitivity:"))
+        self.paint_sensitivity = QSlider(Qt.Horizontal)
+        self.paint_sensitivity.setRange(3, 20)      # 0.3 .. 2.0
+        self.paint_sensitivity.setValue(10)
+        self.paint_sensitivity.valueChanged.connect(self._on_sensitivity_changed)
+        sens_row.addWidget(self.paint_sensitivity)
+        feel_layout.addLayout(sens_row)
+
+        toggle_row = QHBoxLayout()
+        self.paint_mist_toggle = QCheckBox("Motion mist (bodies stir the wall)")
+        self.paint_mist_toggle.setChecked(True)
+        self.paint_mist_toggle.toggled.connect(self._on_mist_toggled)
+        toggle_row.addWidget(self.paint_mist_toggle)
+
+        self.paint_dreams_toggle = QCheckBox("Dreams when idle")
+        self.paint_dreams_toggle.setChecked(True)
+        self.paint_dreams_toggle.toggled.connect(self._on_dreams_toggled)
+        toggle_row.addWidget(self.paint_dreams_toggle)
+        feel_layout.addLayout(toggle_row)
+
+        layout.addWidget(feel_group)
+
+        hint = QLabel(
+            "Paint with any light — a phone flashlight, a candle, a glowing toy. "
+            "Run a calibration scan first so trails land exactly where light touches the surface."
+        )
+        hint.setStyleSheet("color: #667; font-size: 11px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        return tab
+
+    def _start_painting(self):
+        if self.camera is None:
+            self._start_camera()
+        self.paint_engine.start()
+        self.btn_paint_start.setEnabled(False)
+        self.btn_paint_stop.setEnabled(True)
+        self.status.showMessage("Light painting active — bring a light to the surface")
+
+    def _stop_painting(self):
+        self.paint_engine.stop()
+        self.btn_paint_start.setEnabled(True)
+        self.btn_paint_stop.setEnabled(False)
+        self.projector.show_solid(QColor(0, 0, 0))
+        self.status.showMessage("Light painting stopped")
+
+    def _on_paint_preview(self, frame):
+        self._show_numpy_on_label(frame, self.paint_preview)
+
+    def _on_paint_status(self, message):
+        self.status.showMessage(message)
+
+    def _on_mood_changed(self, idx):
+        self.paint_engine.canvas.set_mood(MOOD_NAMES[idx])
+
+    def _on_memory_changed(self, seconds):
+        self.paint_engine.canvas.set_memory(seconds)
+        self.paint_memory_label.setText(f"{seconds}s")
+
+    def _on_sensitivity_changed(self, value):
+        self.paint_engine.sensitivity = value / 10.0
+
+    def _on_mist_toggled(self, checked):
+        self.paint_engine.motion_mist = checked
+
+    def _on_dreams_toggled(self, checked):
+        self.paint_engine.canvas.dreams_enabled = checked
+
     # ── Scene Analysis Tab (placeholder) ────────────────────────
 
     def _build_scene_tab(self):
@@ -374,6 +529,7 @@ class ControlPanel(QMainWindow):
     def closeEvent(self, event):
         if self.calibration.is_scanning:
             self.calibration.cancel_scan()
+        self.paint_engine.stop()
         self._stop_camera()
         self.projector.close()
         event.accept()

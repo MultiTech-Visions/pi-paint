@@ -222,6 +222,55 @@ class CalibrationEngine(QObject):
         overlay[py, px] = [0, 255, 0]
         return overlay
 
+    def build_inverse_maps(self):
+        """Build projector→camera lookup maps from the forward calibration.
+
+        Returns (inv_x, inv_y): float32 arrays at projector resolution
+        giving, for each projector pixel, the camera pixel that sees it.
+        Holes (projector pixels no camera pixel decoded to) are filled by
+        normalized-convolution interpolation from valid neighbors, so the
+        maps are dense enough to warp full camera images (e.g. motion
+        mist) into projector space with a single cv2.remap.
+
+        Returns (None, None) if there is no calibration.
+        """
+        if not self._has_calibration:
+            return None, None
+
+        valid = (self.proj_x >= 0) & (self.proj_y >= 0) & (self.confidence >= 0.1)
+        cam_ys, cam_xs = np.nonzero(valid)
+        if len(cam_ys) == 0:
+            return None, None
+
+        px = np.clip(self.proj_x[valid].astype(np.int32), 0, self.proj_w - 1)
+        py = np.clip(self.proj_y[valid].astype(np.int32), 0, self.proj_h - 1)
+
+        inv_x = np.zeros((self.proj_h, self.proj_w), dtype=np.float32)
+        inv_y = np.zeros((self.proj_h, self.proj_w), dtype=np.float32)
+        known = np.zeros((self.proj_h, self.proj_w), dtype=np.float32)
+        inv_x[py, px] = cam_xs.astype(np.float32)
+        inv_y[py, px] = cam_ys.astype(np.float32)
+        known[py, px] = 1.0
+
+        # Fill holes: repeatedly average valid neighbors into unknown
+        # pixels, growing the kernel so isolated gaps close quickly.
+        for it in range(8):
+            if known.min() > 0:
+                break
+            k = 5 + 4 * it
+            sum_x = cv2.blur(inv_x * known, (k, k))
+            sum_y = cv2.blur(inv_y * known, (k, k))
+            cnt = cv2.blur(known, (k, k))
+            fill = (known == 0) & (cnt > 1e-6)
+            inv_x[fill] = sum_x[fill] / cnt[fill]
+            inv_y[fill] = sum_y[fill] / cnt[fill]
+            known[fill] = 1.0
+
+        # Anything still unknown maps out of range (remap reads border 0)
+        inv_x[known == 0] = -1
+        inv_y[known == 0] = -1
+        return inv_x, inv_y
+
     def camera_to_projector(self, cam_x, cam_y):
         """Look up the projector coordinate for a given camera pixel.
 
