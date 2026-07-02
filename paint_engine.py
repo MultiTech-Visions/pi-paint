@@ -12,6 +12,7 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 from paint_canvas import PaintCanvas
 from light_tracker import LightTracker
+from video_wall import VideoLayer
 
 
 class PaintEngine(QObject):
@@ -60,6 +61,13 @@ class PaintEngine(QObject):
         self.performers = []        # autonomous show behaviors (autopilot)
         self._blend_mask = None     # edge feathering for mesh overlaps
         self._blend_key = (0, 0)
+
+        # Video wall: crisp base layer under the painting.  The panel
+        # wires these when a mesh is running; otherwise the video plays
+        # on the local clock and fills this canvas.
+        self.video = None
+        self.video_geometry_fn = None   # -> (A, t, world_w, world_h) | None
+        self.video_clock_fn = None      # -> world seconds | None
 
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
@@ -115,6 +123,22 @@ class PaintEngine(QObject):
         """
         self.performers = [p for p in performers if p is not None]
 
+    def set_video(self, path, brightness=1.0):
+        """Attach a video wall source; returns False if it can't open."""
+        self.clear_video()
+        layer = VideoLayer(path, self.canvas_w, self.canvas_h, brightness)
+        if not layer.ok:
+            layer.release()
+            return False
+        self.video = layer
+        return True
+
+    def clear_video(self):
+        if self.video is not None:
+            self.video.release()
+            self.video = None
+        self.canvas.set_base(None)
+
     def set_edge_blend(self, left_px, right_px):
         """Feather output brightness over measured mesh overlaps so
         strips covered by two projectors don't glow twice."""
@@ -166,6 +190,16 @@ class PaintEngine(QObject):
         t_show = self._frame_count / self.fps
         for performer in self.performers:
             performer.step(self.canvas, 1.0 / self.fps, t_show)
+
+        if self.video is not None:
+            if self.video_geometry_fn is not None:
+                geom = self.video_geometry_fn()
+                if geom is not None:
+                    self.video.set_geometry(*geom)
+            wt = self.video_clock_fn() if self.video_clock_fn else None
+            if wt is None:
+                wt = t_show
+            self.canvas.set_base(self.video.frame_at(wt))
 
         out = self.canvas.step()
         if self._blend_mask is not None:

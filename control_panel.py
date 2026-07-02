@@ -122,17 +122,26 @@ class ControlPanel(QMainWindow):
                           self.projector, self.calibration)
         eng.preview_ready.connect(self._on_paint_preview)
         eng.status.connect(self._on_paint_status)
+        eng.video_geometry_fn = self._video_geometry
+        eng.video_clock_fn = self._video_clock
         return eng
 
     def _recreate_engines(self):
         """Rebuild both engines after a resolution/scene change."""
         was_painting = self.paint_engine.is_running
+        video_path = (self.paint_engine.video.path
+                      if self.paint_engine.video is not None else None)
         if self.calibration.is_scanning:
             self.calibration.cancel_scan()
+        self.paint_engine.clear_video()
         self.paint_engine.stop()
 
         self.calibration = self._make_calibration_engine()
         self.paint_engine = self._make_paint_engine()
+        if video_path:
+            self.paint_engine.set_video(
+                video_path,
+                self.config.get("video", {}).get("brightness", 1.0))
 
         # Reload the working calibration if it matches the new resolution
         if self.calibration.load_calibration():
@@ -271,6 +280,24 @@ class ControlPanel(QMainWindow):
         if self.mesh_node is not None:
             self.mesh_node.stop()
             self.mesh_node = None
+
+    # ── Video wall wiring ───────────────────────────────────────
+
+    def _video_geometry(self):
+        """World geometry for the video layer: mesh transform when the
+        mesh is up, None (canvas-filling default) otherwise."""
+        if self.mesh_node is None:
+            return None
+        A, t = self.mesh_node.world_transform()
+        _, world_w, _ = self.mesh_node.layout()
+        return A, t, world_w, self.paint_engine.canvas_h
+
+    def _video_clock(self):
+        """Video time source: the mesh world clock keeps every unit on
+        the same frame; None falls back to the local show clock."""
+        if self.mesh_node is None:
+            return None
+        return self.mesh_node.now()
 
     # ── Dual calibration ────────────────────────────────────────
 
@@ -731,6 +758,51 @@ class ControlPanel(QMainWindow):
         dir_layout.addWidget(dir_note)
         layout.addWidget(dir_group)
 
+        # ── Video wall ──
+        video_group = QGroupBox("Video Wall")
+        video_layout = QVBoxLayout(video_group)
+
+        vsrc_row = QHBoxLayout()
+        vsrc_row.addWidget(QLabel("Source:"))
+        self.video_source = QLineEdit()
+        self.video_source.setPlaceholderText(
+            "videos/your_clip.mp4 (same file on every unit)")
+        vsrc_row.addWidget(self.video_source, stretch=1)
+        self.btn_video_play = QPushButton("Play")
+        self.btn_video_play.clicked.connect(self._play_video)
+        vsrc_row.addWidget(self.btn_video_play)
+        self.btn_video_stop = QPushButton("Stop")
+        self.btn_video_stop.clicked.connect(self._stop_video)
+        self.btn_video_stop.setEnabled(False)
+        vsrc_row.addWidget(self.btn_video_stop)
+        video_layout.addLayout(vsrc_row)
+
+        vbr_row = QHBoxLayout()
+        vbr_row.addWidget(QLabel("Brightness:"))
+        self.video_brightness = QSlider(Qt.Horizontal)
+        self.video_brightness.setRange(2, 20)       # 0.2 .. 2.0
+        self.video_brightness.setValue(10)
+        self.video_brightness.valueChanged.connect(self._on_video_brightness)
+        vbr_row.addWidget(self.video_brightness)
+        vbr_row.addStretch()
+        video_layout.addLayout(vbr_row)
+
+        self.video_status = QLabel("")
+        self.video_status.setStyleSheet("color: #667; font-size: 11px;")
+        video_layout.addWidget(self.video_status)
+
+        video_note = QLabel(
+            "One video across the whole mesh: each unit plays its own copy of "
+            "the file, the shared world clock picks the frame, and the "
+            "measured calibration warps each unit's slice — nothing is "
+            "streamed. Light painting and the show glow over the movie."
+        )
+        video_note.setStyleSheet("color: #667; font-size: 11px;")
+        video_note.setWordWrap(True)
+        video_layout.addWidget(video_note)
+
+        layout.addWidget(video_group)
+
         # ── Mesh ──
         mesh_group = QGroupBox("Mesh (multi-unit world)")
         mesh_layout = QVBoxLayout(mesh_group)
@@ -833,6 +905,46 @@ class ControlPanel(QMainWindow):
         dcfg["url"] = self.director_url.text().strip()
         dcfg["model"] = self.director_model.text().strip()
         dcfg["redirect_interval_sec"] = self.director_interval.value()
+
+    def _play_video(self):
+        path = self.video_source.text().strip()
+        if not path:
+            self.status.showMessage("Give the video wall a source file first")
+            return
+        vcfg = self.config.setdefault("video", {})
+        brightness = self.video_brightness.value() / 10.0
+        if not self.paint_engine.set_video(path, brightness):
+            self.video_status.setText(f"could not open {path}")
+            self.status.showMessage(f"ERROR: could not open video '{path}'")
+            return
+        vcfg["source"] = path
+        vcfg["brightness"] = brightness
+        self._ensure_mesh()     # if mesh is enabled, sync clock+geometry
+        if not self.paint_engine.is_running:
+            self.paint_engine.start()
+        v = self.paint_engine.video
+        self.video_status.setText(
+            f"{v.vid_w}x{v.vid_h} @ {v.fps:.0f}fps, {v.duration:.1f}s loop"
+            + (" — synced to mesh world clock" if self.mesh_node else
+               " — local clock"))
+        self.btn_video_play.setEnabled(False)
+        self.btn_video_stop.setEnabled(True)
+        self.btn_paint_stop.setEnabled(True)
+        self.btn_paint_start.setEnabled(False)
+        self.status.showMessage("Video wall playing")
+
+    def _stop_video(self):
+        self.paint_engine.clear_video()
+        self.config.setdefault("video", {})["source"] = ""
+        self.video_status.setText("")
+        self.btn_video_play.setEnabled(True)
+        self.btn_video_stop.setEnabled(False)
+        self.status.showMessage("Video wall stopped")
+
+    def _on_video_brightness(self, value):
+        self.config.setdefault("video", {})["brightness"] = value / 10.0
+        if self.paint_engine.video is not None:
+            self.paint_engine.video.set_brightness(value / 10.0)
 
     def _on_mesh_changed(self, *_):
         mcfg = self.config.setdefault("mesh", {})
@@ -1053,6 +1165,12 @@ class ControlPanel(QMainWindow):
         mcfg = cfg.get("mesh", {})
         self.mesh_enabled.setChecked(bool(mcfg.get("enabled", False)))
         self.mesh_position.setValue(int(mcfg.get("position", 0)))
+
+        # Video wall
+        vcfg = cfg.get("video", {})
+        self.video_source.setText(vcfg.get("source", ""))
+        self.video_brightness.setValue(
+            int(float(vcfg.get("brightness", 1.0)) * 10))
 
         # Painting feel
         pcfg = cfg.get("painting", {})

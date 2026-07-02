@@ -177,6 +177,10 @@ class PaintCanvas:
         self.E_line = np.zeros((self.h, self.w, 3), dtype=np.float32)
         self._line_decay = 0.5 ** (1.0 / (fps * 0.35))
 
+        # Optional crisp base layer (the video wall): screen-blended
+        # under the painting at compose time, untouched by decay/drift
+        self.base = None
+
         self.t = 0                  # frame counter
         self.idle_frames = 10 ** 9  # start "long idle" so dreams can begin softly
         self.idle_delay = int(18 * fps)
@@ -273,6 +277,11 @@ class PaintCanvas:
                              np.asarray(velocities, np.float32),
                              np.asarray(colors, np.float32),
                              life_range=life)
+
+    def set_base(self, frame):
+        """Install (or clear, with None) the crisp base layer — a
+        canvas-sized RGB uint8 frame, e.g. this tick's video wall slice."""
+        self.base = frame
 
     def glow_line(self, p, q, color, gain=0.4, thickness=1.0):
         """Draw one glowing line segment (canvas coords, sub-pixel).
@@ -471,6 +480,14 @@ class PaintCanvas:
         e = cv2.exp(neg_L)
         # (1 - e) * 255, saturating to uint8
         frame = cv2.convertScaleAbs(e, alpha=-255.0, beta=255.0)
+
+        # Screen-blend the painting over the crisp base (video wall):
+        # light adds without clipping, and the movie stays sharp
+        if self.base is not None:
+            inv_p = cv2.subtract(255, frame)
+            inv_b = cv2.subtract(255, self.base)
+            frame = cv2.subtract(
+                255, cv2.multiply(inv_p, inv_b, scale=1.0 / 255.0))
 
         # Sparkle: transient glints on bright light (found at quarter res)
         lum_s = cv2.transform(small, self._ones3)

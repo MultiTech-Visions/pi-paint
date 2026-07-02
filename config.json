@@ -42,6 +42,11 @@
         "settle_ms": 300,
         "dwell_ms": 200
     },
+    "video": {
+        "source": "",
+        "brightness": 1.0,
+        "dir": "videos"
+    },
     "agent": {
         "provider": "anthropic",
         "model": "claude-sonnet-4-20250514",

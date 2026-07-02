@@ -92,6 +92,17 @@ These measured relations are shared over the mesh and two things happen:
 
 Timing rides on the mesh world clock: the flasher broadcasts a capture cue per pattern with settle/dwell windows (`dual_calibration.settle_ms/dwell_ms`) sized to absorb camera latency.
 
+### Video wall — one video across every projector
+
+The **Video Wall** group in The Show tab plays a single video source across the whole mesh. Drop the same file on every unit (e.g. in `videos/`), point the source field at it, press Play. How it stays in sync with zero streaming:
+
+- **The world clock picks the frame.** Position = world time mod duration, so every unit decodes the same frame within a few milliseconds, and a unit that reboots mid-show comes back at the right moment automatically.
+- **The measured calibration places the slice.** The video is stretched across the full world strip and each unit warps its portion through its dual-calibrated world→canvas affine — the movie bends correctly over tilted panels, and edge blending keeps the overlaps even.
+- **The painting lives on top.** The video composites as a crisp base layer (screen blend), so light painting, fish, and every performer glow over the movie without washing it out.
+- **Followers join in.** When the show is running, the mesh leader broadcasts the clip name; any unit holding the same file in its `videos/` directory loads it automatically.
+
+Standalone (no mesh) the video simply fills this unit's canvas on the local clock — a synced base layer for a single-projector show.
+
 Try both dreams headless:
 
 ```bash
@@ -153,6 +164,7 @@ Early stage. The foundation is in place -- the rest is being built out.
 - [x] Local VLM director (Ollama / OpenAI-compatible, instinct fallback)
 - [x] Multi-unit mesh sync (discovery, world clock, shared-world rendering)
 - [x] Mesh dual-calibration (measured overlaps, geometric layout, edge blending)
+- [x] Video wall (one video source across all projectors, world-clock synced, zero streaming)
 - [ ] Hailo-8L scene analysis (YOLOv8-seg surfaces for the director)
 
 ## Setup
@@ -241,6 +253,8 @@ Edit `config.json` to match your hardware:
 | `mesh.enabled` / `mesh.position` | Join the shared world; this unit's place in the line |
 | `mesh.port` / `mesh.broadcast` | Mesh transport (UDP broadcast on the local network) |
 | `mesh.overlap_px` | Manual trim where neighboring projections overlap |
+| `video.source` / `video.brightness` | Video wall clip and output level |
+| `video.dir` | Where followers look for the leader's announced clip |
 | `agent.model` | Claude model for the AI brain |
 | `agent.refresh_interval_sec` | How often the agent re-evaluates the scene |
 
@@ -262,6 +276,7 @@ pi-paint/
 ├── autopilot.py         # Set-it-and-forget-it state machine (calibrate/observe/direct/perform)
 ├── mesh.py              # Multi-unit shared world: UDP discovery, world clock, layout
 ├── dual_calibration.py  # Units flash/watch each other to measure real overlaps
+├── video_wall.py        # One video across the mesh: world-clock frame sync + affine slice
 ├── demo_painting.py     # Headless demo/benchmark -- try the feel on any machine
 ├── demo_autopilot.py    # Headless demo: autonomous direction + multi-projector fish tank
 ├── vj/                  # Standalone VJ mode (pygame) for live visuals

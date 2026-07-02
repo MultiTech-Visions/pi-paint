@@ -28,7 +28,7 @@ import time
 # the physical setup + the experience settings; mesh position is
 # venue-specific, so it travels with the scene too)
 SCENE_SECTIONS = ["display", "projector", "camera", "calibration", "painting",
-                  "mesh"]
+                  "mesh", "video"]
 
 
 class SceneManager:

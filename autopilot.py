@@ -16,6 +16,7 @@ publishes seed/mood, every unit renders its slice, and world-aware
 performers (the fish) swim across all of them in sync.
 """
 
+import os
 import threading
 
 import numpy as np
@@ -257,9 +258,30 @@ class Autopilot(QObject):
             f"{n} unit(s) — this one at {offset:.0f}px of a "
             f"{world_w:.0f}px world ({role}{geo})")
         # Feather output across measured overlaps with neighbors
-        self.engine().set_edge_blend(*self.mesh.blend_spans())
-        # Followers keep their canvas mood in step with the leader
-        if not self.mesh.is_leader and self.state == "performing":
+        eng = self.engine()
+        eng.set_edge_blend(*self.mesh.blend_spans())
+        if self.mesh.is_leader:
+            # Publish the video wall selection so followers join in
+            name = (os.path.basename(eng.video.path)
+                    if eng.video is not None else "")
+            self.mesh.set_show(video=name)
+        else:
             show = self.mesh.show_state()
-            if show.get("mood"):
-                self.engine().canvas.set_mood(show["mood"])
+            # Followers keep mood and video in step with the leader
+            if self.state == "performing" and show.get("mood"):
+                eng.canvas.set_mood(show["mood"])
+            self._sync_video(eng, show.get("video"))
+
+    def _sync_video(self, eng, name):
+        """Follower: match the leader's video wall selection when the
+        same file exists locally in the videos directory."""
+        current = os.path.basename(eng.video.path) if eng.video else ""
+        if name is None or name == current:
+            return
+        if name == "":
+            eng.clear_video()
+            return
+        vcfg = self.config.get("video", {})
+        path = os.path.join(vcfg.get("dir", "videos"), name)
+        if os.path.isfile(path):
+            eng.set_video(path, vcfg.get("brightness", 1.0))
