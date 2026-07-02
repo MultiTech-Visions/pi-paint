@@ -243,6 +243,25 @@ class PaintCanvas:
         brake = np.clip(1.0 - lum / 1.6, 0.0, 1.0)
         self.E += (mist * brake)[:, :, None] * color[None, None, :] * (0.05 * gain)
 
+    # Public hooks for performers (autonomous show behaviors) — these
+    # deliberately do NOT reset the idle clock: performers are ambient,
+    # and only real human light should wake the canvas from dreaming.
+
+    def palette(self, offset=0.0):
+        """Current mood color at a phase offset (float32 RGB in 0..1)."""
+        return _palette_color(self.mood, self.phase + offset)
+
+    def dab(self, x, y, color, gain=0.5, width=1.0):
+        """Place one soft mark of light without registering as input."""
+        self._stamp(x, y, color, gain, width)
+
+    def motes(self, positions, velocities, colors, life=(1.5, 4.0)):
+        """Spawn glowing motes (fireflies/bubbles/embers)."""
+        self.particles.spawn(np.asarray(positions, np.float32),
+                             np.asarray(velocities, np.float32),
+                             np.asarray(colors, np.float32),
+                             life_range=life)
+
     def release(self):
         """Let it go: the painting dissolves upward into fireflies."""
         lum = cv2.transform(self.E, self._ones3)

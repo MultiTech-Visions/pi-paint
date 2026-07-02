@@ -42,6 +42,38 @@ The **Settings** tab covers the whole making of a scene:
 
 Scenes live in `scenes/<name>/` as a `scene.json` plus that scene's `calibration_data.npz`.
 
+## The Show — set it and forget it
+
+Autonomous mode, in **The Show** tab. Press *Begin the Show* and walk away:
+
+1. **Calibrates itself** — runs the structured light scan if there isn't one.
+2. **Observes** — goes dark for a breath and photographs the raw scene.
+3. **Directs** — segments the view (warped into projector space, so it reasons about exactly what the projector can touch) into surfaces, then a *director* casts a show: a mood, a tempo, a one-line theme, and performers assigned to surfaces.
+4. **Performs** — and every few minutes it blinks, looks again, and re-directs, so the show follows the room as it changes. Humans can still paint over it with their own lights the whole time.
+
+Two directors:
+
+- **Instinct** (default) — built-in CV rules, fully offline, zero setup. Dark expanses become aquariums, distinct objects get their silhouettes traced in light, big walls host auroras, warm corners breathe and spark.
+- **Local VLM** — point it at Ollama or any OpenAI-compatible server running a small vision model on the Pi (`moondream`, `llava-phi3`, `qwen2.5vl`). The model sees the scene photo plus the surface data and writes the program — including the theme line. Model output is validated against reality (hallucinated behaviors dropped, bad region ids remapped), and *any* failure falls back to instinct. The show always goes on.
+
+Performers: `aurora_drift`, `contour_trace` (light forever tracing the outline of a physical object it found), `fireflies`, `breathing_glow`, `fish_tank`.
+
+## Mesh — one world across many projectors
+
+Enable **Mesh** on units sharing a network, number them left-to-right, and they become one long canvas. The far-off dream: a fence line of these, a fish entering the leftmost projector and swimming out the rightmost, crossing every seam in sync.
+
+How it works (`mesh.py`): nothing streams frames. Units discover each other by UDP broadcast and share three small things — a **world layout** (each unit owns a slice of a common strip), a **world clock** (the leader broadcasts time; followers track it within a few ms), and a **show state** (seed + mood). Since every performer's trajectory is a pure function of *(seed, world time)*, each unit independently computes identical fish and renders only its slice. Twenty units cost the same bandwidth as two. Units joining or leaving heal the layout automatically.
+
+Today adjacent units butt edge-to-edge by their position number (with a manual overlap trim); automatic overlap discovery via camera dual-calibration is the planned next step.
+
+Try both dreams headless:
+
+```bash
+python demo_autopilot.py    # director casts a show for a synthetic room,
+                            # then 3 simulated units render one fish tank —
+                            # composite strips show fish crossing the seams
+```
+
 ## How It Works
 
 ```
@@ -91,11 +123,11 @@ Early stage. The foundation is in place -- the rest is being built out.
 - [x] Structured light calibration (camera-projector mapping)
 - [x] Interactive light painting (living canvas, light tracking, motion mist, dreams)
 - [x] Settings & scene profiles (displays, camera, projector, saved setups, startup restore)
-- [ ] Hailo-8L scene analysis (YOLOv8-seg)
-- [ ] Claude AI agent integration (animation brain)
-- [ ] Animation / visualization engine
-- [ ] Multi-unit mesh sync
-- [ ] Auto / manual mode toggle
+- [x] Autonomous mode (self-calibration, scene analysis, director, performers)
+- [x] Local VLM director (Ollama / OpenAI-compatible, instinct fallback)
+- [x] Multi-unit mesh sync (discovery, world clock, shared-world rendering)
+- [ ] Hailo-8L scene analysis (YOLOv8-seg surfaces for the director)
+- [ ] Mesh dual-calibration (automatic overlap discovery between neighbors)
 
 ## Setup
 
@@ -177,6 +209,12 @@ Edit `config.json` to match your hardware:
 | `painting.dreams` | Idle wisp that paints to itself when nobody's there |
 | `scenes.dir` | Where scene profiles are stored |
 | `scenes.current` | Scene restored automatically at startup |
+| `director.backend` | `instinct` (built-in), `ollama`, or `openai` (any compatible server) |
+| `director.url` / `director.model` | Where the local VLM lives and which model directs |
+| `director.redirect_interval_sec` | How often the show re-observes the scene (0 = never) |
+| `mesh.enabled` / `mesh.position` | Join the shared world; this unit's place in the line |
+| `mesh.port` / `mesh.broadcast` | Mesh transport (UDP broadcast on the local network) |
+| `mesh.overlap_px` | Manual trim where neighboring projections overlap |
 | `agent.model` | Claude model for the AI brain |
 | `agent.refresh_interval_sec` | How often the agent re-evaluates the scene |
 
@@ -193,7 +231,12 @@ pi-paint/
 ├── light_tracker.py     # Light + motion detection with projector self-suppression (pure numpy/cv2)
 ├── paint_engine.py      # Qt heartbeat: camera -> tracker -> canvas -> projector
 ├── scene_manager.py     # Scene profiles: saved setups (config + calibration bundles)
+├── scene_director.py    # Surface analysis + show directors (instinct CV / local VLM)
+├── performers.py        # Show behaviors: auroras, contour tracing, fireflies, fish
+├── autopilot.py         # Set-it-and-forget-it state machine (calibrate/observe/direct/perform)
+├── mesh.py              # Multi-unit shared world: UDP discovery, world clock, layout
 ├── demo_painting.py     # Headless demo/benchmark -- try the feel on any machine
+├── demo_autopilot.py    # Headless demo: autonomous direction + multi-projector fish tank
 ├── vj/                  # Standalone VJ mode (pygame) for live visuals
 ├── config.json          # Hardware and agent configuration
 ├── setup.sh             # One-shot install script

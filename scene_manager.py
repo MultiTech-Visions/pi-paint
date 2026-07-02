@@ -25,8 +25,10 @@ import time
 
 
 # Config sections that belong to a scene (everything that describes
-# the physical setup + the experience settings)
-SCENE_SECTIONS = ["display", "projector", "camera", "calibration", "painting"]
+# the physical setup + the experience settings; mesh position is
+# venue-specific, so it travels with the scene too)
+SCENE_SECTIONS = ["display", "projector", "camera", "calibration", "painting",
+                  "mesh"]
 
 
 class SceneManager:

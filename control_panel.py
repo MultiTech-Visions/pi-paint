@@ -14,6 +14,7 @@ from calibration import CalibrationEngine
 from paint_engine import PaintEngine
 from paint_canvas import MOOD_NAMES
 from scene_manager import SceneManager
+from autopilot import Autopilot
 
 CONFIG_PATH = "config.json"
 
@@ -43,6 +44,21 @@ class ControlPanel(QMainWindow):
         self.calibration = self._make_calibration_engine()
         self.paint_engine = self._make_paint_engine()
 
+        # Autopilot: the set-it-and-forget-it show director
+        self.autopilot = Autopilot(
+            config,
+            get_paint_engine=lambda: self.paint_engine,
+            get_calibration=lambda: self.calibration,
+            latest_frame_fn=self._latest_camera_frame,
+            ensure_camera_fn=self._ensure_camera,
+            start_scan_fn=self._start_calibration_scan,
+            projector=projector_win,
+        )
+        self.autopilot.state_changed.connect(self._on_autopilot_state)
+        self.autopilot.program_ready.connect(self._on_autopilot_program)
+        self.autopilot.scene_ready.connect(self._on_autopilot_scene)
+        self.autopilot.mesh_changed.connect(self._on_mesh_status)
+
         # Status bar
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -60,8 +76,8 @@ class ControlPanel(QMainWindow):
         self.tabs.addTab(self._build_camera_tab(), "Camera")
         self.tabs.addTab(self._build_calibration_tab(), "Calibration")
         self.tabs.addTab(self._build_painting_tab(), "Light Painting")
+        self.tabs.addTab(self._build_projection_tab(), "The Show")
         self.tabs.addTab(self._build_scene_tab(), "Scene Analysis")
-        self.tabs.addTab(self._build_projection_tab(), "Projection")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
 
         self._position_on_screen()
@@ -206,6 +222,12 @@ class ControlPanel(QMainWindow):
     def _latest_camera_frame(self):
         """Most recent frame from the preview loop (no device contention)."""
         return self.last_frame
+
+    def _ensure_camera(self):
+        """Start the camera if it isn't running; True when available."""
+        if self.camera is None:
+            self._start_camera()
+        return self.camera is not None
 
     # ── Calibration Tab ────────────────────────────────────────
 
@@ -551,16 +573,191 @@ class ControlPanel(QMainWindow):
         layout.addWidget(label)
         return tab
 
-    # ── Projection Tab (placeholder) ────────────────────────────
+    # ── The Show Tab: autonomous mode ───────────────────────────
 
     def _build_projection_tab(self):
+        outer = QScrollArea()
+        outer.setWidgetResizable(True)
         tab = QWidget()
+        outer.setWidget(tab)
         layout = QVBoxLayout(tab)
-        label = QLabel("Projection controls will go here.\n\nAnimation engine + agent brain\nwill drive the projector output.")
-        label.setAlignment(Qt.AlignCenter)
-        label.setStyleSheet("color: #888; font-size: 14px;")
-        layout.addWidget(label)
-        return tab
+
+        # Director's-eye view of the scene (surfaces outlined + numbered)
+        self.show_scene_preview = QLabel(
+            "Autonomous mode.\n\nSet it down, press Begin, walk away:\n"
+            "it calibrates, looks at the scene, casts a show, and runs it."
+        )
+        self.show_scene_preview.setAlignment(Qt.AlignCenter)
+        self.show_scene_preview.setMinimumSize(640, 300)
+        self.show_scene_preview.setStyleSheet(
+            "background-color: #0a0a12; color: #667;")
+        layout.addWidget(self.show_scene_preview)
+
+        self.show_state_label = QLabel("state: off")
+        self.show_state_label.setStyleSheet("color: #7af; font-size: 12px;")
+        layout.addWidget(self.show_state_label)
+
+        self.show_theme_label = QLabel("")
+        self.show_theme_label.setStyleSheet(
+            "color: #cbd; font-size: 13px; font-style: italic;")
+        self.show_theme_label.setWordWrap(True)
+        layout.addWidget(self.show_theme_label)
+
+        btn_row = QHBoxLayout()
+        self.btn_show_start = QPushButton("Begin the Show")
+        self.btn_show_start.clicked.connect(self._start_show)
+        btn_row.addWidget(self.btn_show_start)
+        self.btn_show_stop = QPushButton("End the Show")
+        self.btn_show_stop.clicked.connect(self._stop_show)
+        self.btn_show_stop.setEnabled(False)
+        btn_row.addWidget(self.btn_show_stop)
+        self.btn_show_redirect = QPushButton("Look Again Now")
+        self.btn_show_redirect.setToolTip(
+            "Blink dark, re-photograph the scene, and re-direct the show")
+        self.btn_show_redirect.clicked.connect(self._redirect_show)
+        self.btn_show_redirect.setEnabled(False)
+        btn_row.addWidget(self.btn_show_redirect)
+        layout.addLayout(btn_row)
+
+        # ── Director settings ──
+        dir_group = QGroupBox("Director")
+        dir_layout = QVBoxLayout(dir_group)
+
+        backend_row = QHBoxLayout()
+        backend_row.addWidget(QLabel("Mind:"))
+        self.director_backend = QComboBox()
+        self.director_backend.addItem("Instinct (built-in, no model)", "instinct")
+        self.director_backend.addItem("Ollama (local VLM)", "ollama")
+        self.director_backend.addItem("OpenAI-compatible server", "openai")
+        self.director_backend.currentIndexChanged.connect(self._on_director_changed)
+        backend_row.addWidget(self.director_backend, stretch=1)
+        dir_layout.addLayout(backend_row)
+
+        vlm_row = QHBoxLayout()
+        vlm_row.addWidget(QLabel("URL:"))
+        self.director_url = QLineEdit()
+        self.director_url.editingFinished.connect(self._on_director_changed)
+        vlm_row.addWidget(self.director_url, stretch=2)
+        vlm_row.addWidget(QLabel("Model:"))
+        self.director_model = QLineEdit()
+        self.director_model.editingFinished.connect(self._on_director_changed)
+        vlm_row.addWidget(self.director_model, stretch=1)
+        dir_layout.addLayout(vlm_row)
+
+        interval_row = QHBoxLayout()
+        interval_row.addWidget(QLabel("Look again every (s):"))
+        self.director_interval = QSpinBox()
+        self.director_interval.setRange(0, 3600)
+        self.director_interval.setSpecialValueText("never")
+        self.director_interval.valueChanged.connect(self._on_director_changed)
+        interval_row.addWidget(self.director_interval)
+        interval_row.addStretch()
+        dir_layout.addLayout(interval_row)
+
+        dir_note = QLabel(
+            "Instinct always works offline. For a local VLM on the Pi, run "
+            "Ollama with a small vision model (moondream, llava-phi3, qwen2.5vl). "
+            "Any failure falls back to instinct — the show always goes on."
+        )
+        dir_note.setStyleSheet("color: #667; font-size: 11px;")
+        dir_note.setWordWrap(True)
+        dir_layout.addWidget(dir_note)
+        layout.addWidget(dir_group)
+
+        # ── Mesh ──
+        mesh_group = QGroupBox("Mesh (multi-unit world)")
+        mesh_layout = QVBoxLayout(mesh_group)
+
+        mesh_row = QHBoxLayout()
+        self.mesh_enabled = QCheckBox("Join the shared world")
+        self.mesh_enabled.toggled.connect(self._on_mesh_changed)
+        mesh_row.addWidget(self.mesh_enabled)
+        mesh_row.addWidget(QLabel("Position in line:"))
+        self.mesh_position = QSpinBox()
+        self.mesh_position.setRange(0, 63)
+        self.mesh_position.valueChanged.connect(self._on_mesh_changed)
+        mesh_row.addWidget(self.mesh_position)
+        mesh_row.addStretch()
+        mesh_layout.addLayout(mesh_row)
+
+        self.mesh_status_label = QLabel("mesh off")
+        self.mesh_status_label.setStyleSheet("color: #667; font-size: 11px;")
+        mesh_layout.addWidget(self.mesh_status_label)
+
+        mesh_note = QLabel(
+            "Units on the same network discover each other and share one long "
+            "canvas: number them left-to-right and the fish swim across all of "
+            "them in sync. Takes effect when the show starts."
+        )
+        mesh_note.setStyleSheet("color: #667; font-size: 11px;")
+        mesh_note.setWordWrap(True)
+        mesh_layout.addWidget(mesh_note)
+        layout.addWidget(mesh_group)
+
+        layout.addStretch()
+        return outer
+
+    def _start_show(self):
+        self.btn_show_start.setEnabled(False)
+        self.btn_show_stop.setEnabled(True)
+        self.btn_show_redirect.setEnabled(True)
+        # Manual painting controls hand over to the autopilot
+        if self.paint_engine.is_running:
+            self._stop_painting()
+        self.autopilot.start()
+        self.status.showMessage("Autonomous show starting...")
+
+    def _stop_show(self):
+        self.autopilot.stop()
+        self.btn_show_start.setEnabled(True)
+        self.btn_show_stop.setEnabled(False)
+        self.btn_show_redirect.setEnabled(False)
+        self.btn_paint_start.setEnabled(True)
+        self.btn_paint_stop.setEnabled(False)
+        self.show_theme_label.setText("")
+        self.status.showMessage("Show ended")
+
+    def _redirect_show(self):
+        if self.autopilot.running:
+            self.autopilot._begin_observation()
+
+    def _on_autopilot_state(self, state):
+        pretty = {
+            "off": "off",
+            "calibrating": "calibrating — scanning the scene with light",
+            "observing": "observing — a dark breath, then a photograph",
+            "directing": "directing — deciding what this scene wants",
+            "performing": "performing",
+        }.get(state, state)
+        self.show_state_label.setText(f"state: {pretty}")
+
+    def _on_autopilot_program(self, program):
+        theme = program.get("theme", "")
+        src = program.get("source", "")
+        notes = program.get("notes", "")
+        cast = ", ".join(b["type"] for b in program.get("behaviors", []))
+        text = f"“{theme}”\n{program.get('mood', '')} · {cast} · by {src}"
+        if notes:
+            text += f"\n({notes})"
+        self.show_theme_label.setText(text)
+
+    def _on_autopilot_scene(self, view_rgb):
+        self._show_numpy_on_label(view_rgb, self.show_scene_preview)
+
+    def _on_mesh_status(self, text):
+        self.mesh_status_label.setText(text)
+
+    def _on_director_changed(self, *_):
+        dcfg = self.config.setdefault("director", {})
+        dcfg["backend"] = self.director_backend.currentData()
+        dcfg["url"] = self.director_url.text().strip()
+        dcfg["model"] = self.director_model.text().strip()
+        dcfg["redirect_interval_sec"] = self.director_interval.value()
+
+    def _on_mesh_changed(self, *_):
+        mcfg = self.config.setdefault("mesh", {})
+        mcfg["enabled"] = self.mesh_enabled.isChecked()
+        mcfg["position"] = self.mesh_position.value()
 
     # ── Settings Tab: the making of the scene ───────────────────
 
@@ -761,6 +958,19 @@ class ControlPanel(QMainWindow):
         # Calibration timing
         self.settings_cal_wait.setValue(cfg["calibration"]["gray_code_wait_ms"])
         self.settings_cal_delay.setValue(cfg["calibration"]["capture_delay_ms"])
+
+        # Director
+        dcfg = cfg.get("director", {})
+        bi = self.director_backend.findData(dcfg.get("backend", "instinct"))
+        self.director_backend.setCurrentIndex(max(0, bi))
+        self.director_url.setText(dcfg.get("url", "http://127.0.0.1:11434"))
+        self.director_model.setText(dcfg.get("model", "moondream"))
+        self.director_interval.setValue(int(dcfg.get("redirect_interval_sec", 180)))
+
+        # Mesh
+        mcfg = cfg.get("mesh", {})
+        self.mesh_enabled.setChecked(bool(mcfg.get("enabled", False)))
+        self.mesh_position.setValue(int(mcfg.get("position", 0)))
 
         # Painting feel
         pcfg = cfg.get("painting", {})
@@ -976,6 +1186,8 @@ class ControlPanel(QMainWindow):
         self.status.showMessage(f"Scene '{name}' deleted")
 
     def closeEvent(self, event):
+        if self.autopilot.running:
+            self.autopilot.stop()
         if self.calibration.is_scanning:
             self.calibration.cancel_scan()
         self.paint_engine.stop()

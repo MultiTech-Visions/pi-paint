@@ -24,6 +24,20 @@
         "motion_mist": true,
         "dreams": true
     },
+    "director": {
+        "backend": "instinct",
+        "url": "http://127.0.0.1:11434",
+        "model": "moondream",
+        "timeout_sec": 45,
+        "redirect_interval_sec": 180
+    },
+    "mesh": {
+        "enabled": false,
+        "port": 45454,
+        "broadcast": "255.255.255.255",
+        "position": 0,
+        "overlap_px": 0
+    },
     "agent": {
         "provider": "anthropic",
         "model": "claude-sonnet-4-20250514",

@@ -57,6 +57,7 @@ class PaintEngine(QObject):
         self._last_output = None
         self._running = False
         self._frame_count = 0
+        self.performers = []        # autonomous show behaviors (autopilot)
 
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
@@ -104,6 +105,14 @@ class PaintEngine(QObject):
         """Dissolve the current painting into fireflies."""
         self.canvas.release()
 
+    def set_performers(self, performers):
+        """Install the autonomous show cast (empty list clears it).
+
+        Performers paint alongside human light — people can still walk
+        up and paint over the show, which is the point.
+        """
+        self.performers = [p for p in performers if p is not None]
+
     def _tick(self):
         frame = self.latest_frame()
         if frame is not None:
@@ -126,6 +135,10 @@ class PaintEngine(QObject):
                 )
             if result["mist"] is not None:
                 self.canvas.add_mist(result["mist"], gain=2.0)
+
+        t_show = self._frame_count / self.fps
+        for performer in self.performers:
+            performer.step(self.canvas, 1.0 / self.fps, t_show)
 
         out = self.canvas.step()
         self._last_output = out
