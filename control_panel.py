@@ -285,9 +285,15 @@ class ControlPanel(QMainWindow):
 
     def _video_geometry(self):
         """World geometry for the video layer: mesh transform when the
-        mesh is up, None (canvas-filling default) otherwise."""
+        mesh is up, None (canvas-filling default) otherwise.  Also the
+        follower-side framing sync point — called every tick anyway."""
         if self.mesh_node is None:
             return None
+        if not self.mesh_node.is_leader and self.paint_engine.video is not None:
+            framing = self.mesh_node.show_state().get("framing")
+            if framing and framing != self.paint_engine.video.framing():
+                self.paint_engine.video.set_framing(**framing)
+                self._set_framing_widgets(framing)
         A, t = self.mesh_node.world_transform()
         _, world_w, _ = self.mesh_node.layout()
         return A, t, world_w, self.paint_engine.canvas_h
@@ -787,6 +793,41 @@ class ControlPanel(QMainWindow):
         vbr_row.addStretch()
         video_layout.addLayout(vbr_row)
 
+        # ── Framing: make standard 16:9 footage work on a wide wall ──
+        frame_row = QHBoxLayout()
+        frame_row.addWidget(QLabel("Fit:"))
+        self.video_fit = QComboBox()
+        self.video_fit.addItem("Cover (fill, crop)", "cover")
+        self.video_fit.addItem("Fit (letterbox)", "fit")
+        self.video_fit.addItem("Stretch", "stretch")
+        self.video_fit.currentIndexChanged.connect(self._on_video_framing)
+        frame_row.addWidget(self.video_fit)
+        frame_row.addWidget(QLabel("Zoom:"))
+        self.video_zoom = QSlider(Qt.Horizontal)
+        self.video_zoom.setRange(3, 40)             # 0.3x .. 4.0x
+        self.video_zoom.setValue(10)
+        self.video_zoom.valueChanged.connect(self._on_video_framing)
+        frame_row.addWidget(self.video_zoom, stretch=1)
+        video_layout.addLayout(frame_row)
+
+        pan_row = QHBoxLayout()
+        pan_row.addWidget(QLabel("Pan X:"))
+        self.video_pan_x = QSlider(Qt.Horizontal)
+        self.video_pan_x.setRange(-100, 100)        # ±1.0 (half strip)
+        self.video_pan_x.setValue(0)
+        self.video_pan_x.valueChanged.connect(self._on_video_framing)
+        pan_row.addWidget(self.video_pan_x, stretch=1)
+        pan_row.addWidget(QLabel("Pan Y:"))
+        self.video_pan_y = QSlider(Qt.Horizontal)
+        self.video_pan_y.setRange(-100, 100)
+        self.video_pan_y.setValue(0)
+        self.video_pan_y.valueChanged.connect(self._on_video_framing)
+        pan_row.addWidget(self.video_pan_y, stretch=1)
+        btn_frame_reset = QPushButton("Reset")
+        btn_frame_reset.clicked.connect(self._reset_video_framing)
+        pan_row.addWidget(btn_frame_reset)
+        video_layout.addLayout(pan_row)
+
         self.video_status = QLabel("")
         self.video_status.setStyleSheet("color: #667; font-size: 11px;")
         video_layout.addWidget(self.video_status)
@@ -919,7 +960,12 @@ class ControlPanel(QMainWindow):
             return
         vcfg["source"] = path
         vcfg["brightness"] = brightness
+        framing = self._current_framing()
+        vcfg["framing"] = framing
+        self.paint_engine.video.set_framing(**framing)
         self._ensure_mesh()     # if mesh is enabled, sync clock+geometry
+        if self.mesh_node is not None and self.mesh_node.is_leader:
+            self.mesh_node.set_show(framing=framing)
         if not self.paint_engine.is_running:
             self.paint_engine.start()
         v = self.paint_engine.video
@@ -945,6 +991,47 @@ class ControlPanel(QMainWindow):
         self.config.setdefault("video", {})["brightness"] = value / 10.0
         if self.paint_engine.video is not None:
             self.paint_engine.video.set_brightness(value / 10.0)
+
+    def _current_framing(self):
+        return {
+            "mode": self.video_fit.currentData() or "cover",
+            "zoom": self.video_zoom.value() / 10.0,
+            "pan_x": self.video_pan_x.value() / 100.0,
+            "pan_y": self.video_pan_y.value() / 100.0,
+        }
+
+    def _on_video_framing(self, *_):
+        framing = self._current_framing()
+        self.config.setdefault("video", {})["framing"] = framing
+        if self.paint_engine.video is not None:
+            self.paint_engine.video.set_framing(**framing)
+        # On a mesh the framing must match everywhere or the wall
+        # tears; the leader's choice propagates via the show state
+        if self.mesh_node is not None and self.mesh_node.is_leader:
+            self.mesh_node.set_show(framing=framing)
+
+    def _reset_video_framing(self):
+        for w, v in ((self.video_zoom, 10), (self.video_pan_x, 0),
+                     (self.video_pan_y, 0)):
+            w.blockSignals(True)
+            w.setValue(v)
+            w.blockSignals(False)
+        self.video_fit.setCurrentIndex(0)
+        self._on_video_framing()
+
+    def _set_framing_widgets(self, framing):
+        """Push a framing dict into the widgets without feedback loops."""
+        idx = self.video_fit.findData(framing.get("mode", "cover"))
+        widgets = (
+            (self.video_fit, max(0, idx), "setCurrentIndex"),
+            (self.video_zoom, int(framing.get("zoom", 1.0) * 10), "setValue"),
+            (self.video_pan_x, int(framing.get("pan_x", 0.0) * 100), "setValue"),
+            (self.video_pan_y, int(framing.get("pan_y", 0.0) * 100), "setValue"),
+        )
+        for w, v, setter in widgets:
+            w.blockSignals(True)
+            getattr(w, setter)(v)
+            w.blockSignals(False)
 
     def _on_mesh_changed(self, *_):
         mcfg = self.config.setdefault("mesh", {})
@@ -1171,6 +1258,7 @@ class ControlPanel(QMainWindow):
         self.video_source.setText(vcfg.get("source", ""))
         self.video_brightness.setValue(
             int(float(vcfg.get("brightness", 1.0)) * 10))
+        self._set_framing_widgets(vcfg.get("framing", {}))
 
         # Painting feel
         pcfg = cfg.get("painting", {})

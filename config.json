@@ -45,7 +45,13 @@
     "video": {
         "source": "",
         "brightness": 1.0,
-        "dir": "videos"
+        "dir": "videos",
+        "framing": {
+            "mode": "cover",
+            "zoom": 1.0,
+            "pan_x": 0.0,
+            "pan_y": 0.0
+        }
     },
     "agent": {
         "provider": "anthropic",

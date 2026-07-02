@@ -54,7 +54,7 @@ class MeshNode:
         self._lock = threading.Lock()
         self._clock_offset = 0.0        # leader_time - local_time
         self._show = {"seed": 1234, "mood": None, "tempo": None,
-                      "video": None}
+                      "video": None, "framing": None}
 
         # Measured relations from dual calibration:
         # (observer_id, flasher_id) -> {ox, oy, scale, conf}
@@ -100,7 +100,8 @@ class MeshNode:
         """Shared world time (the leader's monotonic clock)."""
         return time.monotonic() + self._clock_offset
 
-    def set_show(self, seed=None, mood=None, tempo=None, video=None):
+    def set_show(self, seed=None, mood=None, tempo=None, video=None,
+                 framing=None):
         """Leader: publish show parameters to the mesh."""
         if seed is not None:
             self._show["seed"] = int(seed)
@@ -110,6 +111,8 @@ class MeshNode:
             self._show["tempo"] = tempo
         if video is not None:
             self._show["video"] = video    # "" clears
+        if framing is not None:
+            self._show["framing"] = dict(framing)
 
     def show_state(self):
         return dict(self._show)
@@ -343,7 +346,7 @@ class MeshNode:
             else:
                 self._clock_offset += (offset - self._clock_offset) * 0.15
         elif kind == "show" and nid < self.node_id:
-            for key in ("seed", "mood", "tempo", "video"):
+            for key in ("seed", "mood", "tempo", "video", "framing"):
                 if msg.get(key) is not None:
                     self._show[key] = msg[key]
         elif kind == "dcal":

@@ -45,28 +45,81 @@ class VideoLayer:
         self._raw = None            # last decoded frame (RGB)
         self._warped = None         # cached canvas-space frame
         self._M = None
+
+        # Framing: how a standard video sits in the (often very wide)
+        # world strip.  Modes: "cover" fills the strip and crops,
+        # "fit" letterboxes the whole frame, "stretch" distorts to
+        # fill exactly.  zoom scales on top; pan shifts the framing
+        # (normalized: ±1 = half the strip in that axis).
+        self.mode = "cover"
+        self.zoom = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+
         # Default geometry: the video fills this unit's canvas
-        self.set_geometry(np.eye(2), np.zeros(2),
-                          self.canvas_w, self.canvas_h)
+        self._A = np.eye(2)
+        self._t = np.zeros(2)
+        self.world_w = float(self.canvas_w)
+        self.world_h = float(self.canvas_h)
+        self._compute_map()
 
     @property
     def duration(self):
         return self.n_frames / self.fps if self.ok else 0.0
 
     def set_geometry(self, A, t, world_w, world_h):
-        """Install the world→canvas affine and the world strip size.
-
-        The video is stretched to fill the whole world strip; this
-        unit renders the slice its transform says it owns.
-        """
+        """Install the world→canvas affine and the world strip size."""
         if not self.ok:
             return
-        # video px -> world px (stretch fill), then world -> canvas
-        S = np.array([[world_w / self.vid_w, 0.0],
-                      [0.0, world_h / self.vid_h]], np.float64)
-        M_A = np.asarray(A, np.float64) @ S
-        M = np.hstack([M_A, np.asarray(t, np.float64).reshape(2, 1)])
-        M = M.astype(np.float32)
+        self._A = np.asarray(A, np.float64)
+        self._t = np.asarray(t, np.float64)
+        self.world_w = float(world_w)
+        self.world_h = float(world_h)
+        self._compute_map()
+
+    def set_framing(self, mode=None, zoom=None, pan_x=None, pan_y=None):
+        """Adjust how the video sits in the world strip.
+
+        On a mesh this must match on every unit or the wall tears —
+        the panel syncs it through the leader's show state.
+        """
+        if mode in ("cover", "fit", "stretch"):
+            self.mode = mode
+        if zoom is not None:
+            self.zoom = float(np.clip(zoom, 0.05, 20.0))
+        if pan_x is not None:
+            self.pan_x = float(np.clip(pan_x, -3.0, 3.0))
+        if pan_y is not None:
+            self.pan_y = float(np.clip(pan_y, -3.0, 3.0))
+        self._compute_map()
+
+    def framing(self):
+        return {"mode": self.mode, "zoom": self.zoom,
+                "pan_x": self.pan_x, "pan_y": self.pan_y}
+
+    def _compute_map(self):
+        """Compose video px → world px (framing) → canvas px (affine)."""
+        if not self.ok:
+            return
+        ww, wh = self.world_w, self.world_h
+        if self.mode == "stretch":
+            sx, sy = ww / self.vid_w, wh / self.vid_h
+        elif self.mode == "fit":
+            s = min(ww / self.vid_w, wh / self.vid_h)
+            sx = sy = s
+        else:                       # cover
+            s = max(ww / self.vid_w, wh / self.vid_h)
+            sx = sy = s
+        sx *= self.zoom
+        sy *= self.zoom
+        # Video center anchored to strip center, then panned
+        off_x = ww * 0.5 - sx * self.vid_w * 0.5 + self.pan_x * ww * 0.5
+        off_y = wh * 0.5 - sy * self.vid_h * 0.5 + self.pan_y * wh * 0.5
+        S = np.array([[sx, 0.0], [0.0, sy]], np.float64)
+        o = np.array([off_x, off_y], np.float64)
+        M_A = self._A @ S
+        M_t = self._A @ o + self._t
+        M = np.hstack([M_A, M_t.reshape(2, 1)]).astype(np.float32)
         if self._M is None or not np.allclose(M, self._M, atol=1e-4):
             self._M = M
             self._warped = None

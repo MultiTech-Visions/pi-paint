@@ -103,6 +103,8 @@ The **Video Wall** group in The Show tab plays a single video source across the 
 
 Standalone (no mesh) the video simply fills this unit's canvas on the local clock — a synced base layer for a single-projector show.
 
+**Framing** makes ordinary 16:9 footage work on a wall of any shape: pick *Cover* (fill the strip, cropping vertically), *Fit* (letterbox the whole frame), or *Stretch*, then zoom (0.3–4×) and pan X/Y to choose exactly which part of the picture lives on the wall. Framing is mesh-synced through the leader's show state — every unit frames identically, or the wall would tear — and follower panels update their sliders live to match. Framing saves with the scene.
+
 Try both dreams headless:
 
 ```bash
