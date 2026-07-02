@@ -38,6 +38,10 @@
         "position": 0,
         "overlap_px": 0
     },
+    "dual_calibration": {
+        "settle_ms": 300,
+        "dwell_ms": 200
+    },
     "agent": {
         "provider": "anthropic",
         "model": "claude-sonnet-4-20250514",

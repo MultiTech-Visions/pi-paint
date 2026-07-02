@@ -98,10 +98,27 @@ class _SimWorld:
         return self._clock[0]
 
 
+def _smoothstep_ramp(width, left, right):
+    ramp = np.ones(width, np.float32)
+    if left > 0:
+        t = np.linspace(0.0, 1.0, left, dtype=np.float32)
+        ramp[:left] = t * t * (3.0 - 2.0 * t)
+    if right > 0:
+        t = np.linspace(1.0, 0.0, right, dtype=np.float32)
+        ramp[-right:] = np.minimum(ramp[-right:], t * t * (3.0 - 2.0 * t))
+    return ramp
+
+
 def part2_mesh_fish(out_dir):
-    print("── Part 2: one fish tank across three projectors ──")
+    """Three units whose projections OVERLAP by 120px, as dual
+    calibration would measure — each edge-blends across the measured
+    overlap, and the composite (light adds physically where projectors
+    overlap) is seamless."""
+    print("── Part 2: one fish tank across three overlapping projectors ──")
     n_units = 3
-    world_w = CW * n_units
+    overlap = 120
+    offsets = [u * (CW - overlap) for u in range(n_units)]
+    world_w = offsets[-1] + CW
     seed = 4242
     clock = [0.0]
 
@@ -110,25 +127,29 @@ def part2_mesh_fish(out_dir):
         canvas = PaintCanvas(CW, CH, fps=FPS, rng=np.random.default_rng(50 + u))
         canvas.set_mood("biolume")
         canvas.dreams_enabled = False
-        world = _SimWorld(u * CW, world_w, seed, clock)
+        world = _SimWorld(offsets[u], world_w, seed, clock)
         tank = perf.FishTank(None, CW, CH, tempo=0.6, seed=7, world=world,
                              n_fish=7)
-        units.append((canvas, tank))
+        left = overlap if u > 0 else 0
+        right = overlap if u < n_units - 1 else 0
+        ramp = _smoothstep_ramp(CW, left, right)
+        units.append((canvas, tank, ramp))
 
     for i in range(14 * FPS):
         clock[0] = i / FPS
-        outs = []
-        for canvas, tank in units:
+        world_img = np.zeros((CH, world_w, 3), np.float32)
+        for u, (canvas, tank, ramp) in enumerate(units):
             tank.step(canvas, 1.0 / FPS, clock[0])
-            outs.append(canvas.step())
+            out = canvas.step().astype(np.float32) * ramp[None, :, None]
+            world_img[:, offsets[u]:offsets[u] + CW] += out   # light adds
         if i % 45 == 0:
-            strip = np.concatenate(outs, axis=1)
-            # seam markers so you can see the fish cross projector edges
-            for u in range(1, n_units):
-                strip[:, u * CW - 1:u * CW + 1] = (28, 28, 36)
+            strip = np.clip(world_img, 0, 255).astype(np.uint8)
+            for off in offsets[1:]:                # overlap zone markers
+                strip[-4:, off:off + overlap] = (40, 40, 60)
             cv2.imwrite(os.path.join(out_dir, f"mesh_{i:04d}.png"),
                         cv2.cvtColor(strip, cv2.COLOR_RGB2BGR))
-    print(f"wrote composite strips ({world_w}x{CH}) to {out_dir}/")
+    print(f"wrote blended composites ({world_w}x{CH}, {overlap}px measured "
+          f"overlaps) to {out_dir}/")
 
 
 def main():

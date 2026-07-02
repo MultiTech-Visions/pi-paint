@@ -53,6 +53,14 @@ class MeshNode:
         self._clock_offset = 0.0        # leader_time - local_time
         self._show = {"seed": 1234, "mood": None, "tempo": None}
 
+        # Measured relations from dual calibration:
+        # (observer_id, flasher_id) -> {ox, oy, scale, conf}
+        # meaning: flasher's canvas origin sits at (ox, oy) in the
+        # observer's canvas coordinates.
+        self.relations = {}
+        self._dcal_in = []              # incoming dcal protocol messages
+        self._rel_tick = 0
+
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, "SO_REUSEPORT"):
@@ -101,26 +109,128 @@ class MeshNode:
     def show_state(self):
         return dict(self._show)
 
+    # ── Dual calibration transport + relations ──────────────────────────
+
+    def send_dcal(self, payload):
+        """Broadcast a dual-calibration protocol message."""
+        self._send({"t": "dcal", **payload})
+
+    def drain_dcal(self):
+        """Fetch queued incoming dcal messages (called from the GUI side)."""
+        with self._lock:
+            msgs, self._dcal_in = self._dcal_in, []
+        return msgs
+
+    def add_relation(self, obs_id, flasher_id, rel):
+        """Store a measured relation and share it with the mesh."""
+        entry = {"ox": float(rel["ox"]), "oy": float(rel["oy"]),
+                 "scale": float(rel.get("scale", 1.0)),
+                 "conf": float(rel.get("conf", 0.0))}
+        with self._lock:
+            self.relations[(obs_id, flasher_id)] = entry
+        self._broadcast_relations()
+
+    def clear_relations(self):
+        with self._lock:
+            self.relations = {}
+
+    def _broadcast_relations(self):
+        """Share the relations this unit observed (idempotent, re-sent
+        periodically so late joiners converge on the same layout)."""
+        with self._lock:
+            mine = [{"obs": o, "fl": f, **r}
+                    for (o, f), r in self.relations.items()
+                    if o == self.node_id]
+        if mine:
+            self._send({"t": "rel", "rels": mine})
+
     def layout(self):
         """This unit's slice of the world.
 
-        Returns (offset_px, world_w_px, n_units).  Units are ordered by
-        (position, node_id) and butted edge to edge minus overlap trim.
+        Returns (offset_px, world_w_px, n_units).  When dual
+        calibration has measured relations, offsets come from real
+        geometry; unmeasured units fall back to position-ordered
+        butt-joints minus the manual overlap trim.
+        """
+        offsets, world_w, _ = self._solve_layout()
+        return offsets[self.node_id], world_w, len(offsets)
+
+    def blend_spans(self):
+        """Measured overlap with neighbors: (left_px, right_px) of this
+        unit's canvas that other units also cover — the strips to
+        feather so doubled projection doesn't glow twice."""
+        offsets, _, widths = self._solve_layout()
+        my_off = offsets[self.node_id]
+        my_w = widths[self.node_id]
+        left = right = 0.0
+        for nid, off in offsets.items():
+            if nid == self.node_id:
+                continue
+            w = widths[nid]
+            if off < my_off:
+                left = max(left, (off + w) - my_off)
+            elif off > my_off:
+                right = max(right, (my_off + my_w) - off)
+        return (max(0.0, min(float(left), my_w)),
+                max(0.0, min(float(right), my_w)))
+
+    def _solve_layout(self):
+        """offsets/widths for every known unit, identical on all units.
+
+        Measured relations form a graph (edge: flasher_offset =
+        observer_offset + ox); BFS from the lowest-id measured unit
+        places the connected component; anything unmeasured is appended
+        after the current extent in (position, id) order.  Offsets are
+        normalized so the leftmost unit sits at 0.
         """
         with self._lock:
-            units = [(self.position, self.node_id, self.width_px)]
-            units += [(p["position"], nid, p["width"])
-                      for nid, p in self.peers.items()]
-        units.sort()
-        offset = 0.0
-        my_offset = 0.0
-        world_w = self.width_px
-        for _, nid, width in units:
-            if nid == self.node_id:
-                my_offset = offset
-            world_w = offset + width
-            offset += width - self.overlap_px
-        return my_offset, max(world_w, self.width_px), len(units)
+            units = {self.node_id: (self.position, self.width_px)}
+            for nid, p in self.peers.items():
+                units[nid] = (p["position"], p["width"])
+            rels = dict(self.relations)
+
+        # Undirected offset edges between known units, best-confidence
+        # relation wins when both directions were measured
+        edges = {}
+        for (obs, fl), r in rels.items():
+            if obs not in units or fl not in units:
+                continue
+            key = tuple(sorted((obs, fl)))
+            cand = (r["conf"], obs, fl, r["ox"])
+            if key not in edges or cand[0] > edges[key][0]:
+                edges[key] = cand
+
+        adj = {}
+        for _, obs, fl, ox in edges.values():
+            adj.setdefault(obs, []).append((fl, ox))
+            adj.setdefault(fl, []).append((obs, -ox))
+
+        offsets = {}
+        if adj:
+            anchor = min(nid for nid in adj if nid in units)
+            offsets[anchor] = 0.0
+            queue = [anchor]
+            while queue:
+                cur = queue.pop(0)
+                for nxt, dx in adj.get(cur, []):
+                    if nxt not in offsets:
+                        offsets[nxt] = offsets[cur] + dx
+                        queue.append(nxt)
+
+        # Unmeasured units: butt-joint after the current extent
+        extent = max((offsets[n] + units[n][1] for n in offsets), default=0.0)
+        rest = sorted((units[n][0], n) for n in units if n not in offsets)
+        for _, nid in rest:
+            off = extent - self.overlap_px if extent > 0 else 0.0
+            offsets[nid] = off
+            extent = off + units[nid][1]
+
+        # Normalize: leftmost unit at 0
+        m = min(offsets.values())
+        offsets = {nid: off - m for nid, off in offsets.items()}
+        widths = {nid: units[nid][1] for nid in units}
+        world_w = max(offsets[n] + widths[n] for n in units)
+        return offsets, max(world_w, self.width_px), widths
 
     def world(self):
         """A world adapter for performers (FishTank et al.)."""
@@ -144,6 +254,9 @@ class MeshNode:
             if self.is_leader:
                 self._send({"t": "time", "clock": time.monotonic()})
                 self._send({"t": "show", **self._show})
+            self._rel_tick += 1
+            if self._rel_tick % 5 == 0:
+                self._broadcast_relations()
             self._prune()
             time.sleep(HELLO_INTERVAL)
 
@@ -185,6 +298,20 @@ class MeshNode:
             for key in ("seed", "mood", "tempo"):
                 if msg.get(key) is not None:
                     self._show[key] = msg[key]
+        elif kind == "dcal":
+            with self._lock:
+                self._dcal_in.append(msg)
+        elif kind == "rel":
+            with self._lock:
+                for r in msg.get("rels", []):
+                    try:
+                        self.relations[(r["obs"], r["fl"])] = {
+                            "ox": float(r["ox"]), "oy": float(r["oy"]),
+                            "scale": float(r.get("scale", 1.0)),
+                            "conf": float(r.get("conf", 0.0)),
+                        }
+                    except (KeyError, TypeError, ValueError):
+                        continue
 
     def _prune(self):
         cutoff = time.monotonic() - PEER_TIMEOUT

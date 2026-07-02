@@ -24,7 +24,6 @@ from PyQt5.QtGui import QColor
 
 import performers as perf
 from scene_director import analyze_surfaces, draw_surface_overlay, make_director
-from mesh import MeshNode
 
 
 class Autopilot(QObject):
@@ -34,13 +33,16 @@ class Autopilot(QObject):
     mesh_changed = pyqtSignal(str)          # mesh status line
 
     def __init__(self, config, get_paint_engine, get_calibration,
-                 latest_frame_fn, ensure_camera_fn, start_scan_fn, projector):
+                 latest_frame_fn, ensure_camera_fn, start_scan_fn, projector,
+                 get_mesh=None):
         """
         get_paint_engine / get_calibration : callables returning the
             *current* engines (the panel recreates them on scene changes).
         ensure_camera_fn : callable -> bool, starts the camera if needed.
         start_scan_fn : callable, kicks off a calibration scan through
             the panel (so its camera housekeeping applies).
+        get_mesh : callable -> MeshNode or None.  The panel owns the
+            node (it outlives shows and serves dual calibration too).
         """
         super().__init__()
         self.config = config
@@ -50,6 +52,7 @@ class Autopilot(QObject):
         self.ensure_camera = ensure_camera_fn
         self.start_scan = start_scan_fn
         self.projector = projector
+        self.get_mesh = get_mesh or (lambda: None)
 
         self.state = "off"
         self.running = False
@@ -104,11 +107,10 @@ class Autopilot(QObject):
         self._mesh_timer.stop()
         eng = self.engine()
         eng.set_performers([])
+        eng.set_edge_blend(0, 0)
         eng.stop()
         self.projector.show_solid(QColor(0, 0, 0))
-        if self.mesh is not None:
-            self.mesh.stop()
-            self.mesh = None
+        self.mesh = None            # the panel owns the node; just let go
         self._set_state("off")
 
     def _set_state(self, state):
@@ -240,27 +242,22 @@ class Autopilot(QObject):
     # ── Mesh ────────────────────────────────────────────────────────────
 
     def _start_mesh(self):
-        mcfg = self.config.get("mesh", {})
-        if not mcfg.get("enabled", False):
-            return
-        eng = self.engine()
-        self.mesh = MeshNode(
-            port=int(mcfg.get("port", 45454)),
-            broadcast=mcfg.get("broadcast", "255.255.255.255"),
-            position=int(mcfg.get("position", 0)),
-            width_px=eng.canvas_w,
-            overlap_px=float(mcfg.get("overlap_px", 0)),
-        )
-        self._mesh_timer.start(2000)
+        self.mesh = self.get_mesh()
+        if self.mesh is not None:
+            self._mesh_timer.start(2000)
 
     def _mesh_tick(self):
         if self.mesh is None:
             return
         offset, world_w, n = self.mesh.layout()
         role = "leader" if self.mesh.is_leader else "follower"
+        measured = len(self.mesh.relations)
+        geo = f", {measured} measured relation(s)" if measured else ""
         self.mesh_changed.emit(
             f"{n} unit(s) — this one at {offset:.0f}px of a "
-            f"{world_w:.0f}px world ({role})")
+            f"{world_w:.0f}px world ({role}{geo})")
+        # Feather output across measured overlaps with neighbors
+        self.engine().set_edge_blend(*self.mesh.blend_spans())
         # Followers keep their canvas mood in step with the leader
         if not self.mesh.is_leader and self.state == "performing":
             show = self.mesh.show_state()

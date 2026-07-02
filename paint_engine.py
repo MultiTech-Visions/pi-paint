@@ -58,6 +58,8 @@ class PaintEngine(QObject):
         self._running = False
         self._frame_count = 0
         self.performers = []        # autonomous show behaviors (autopilot)
+        self._blend_mask = None     # edge feathering for mesh overlaps
+        self._blend_key = (0, 0)
 
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
@@ -113,6 +115,31 @@ class PaintEngine(QObject):
         """
         self.performers = [p for p in performers if p is not None]
 
+    def set_edge_blend(self, left_px, right_px):
+        """Feather output brightness over measured mesh overlaps so
+        strips covered by two projectors don't glow twice."""
+        key = (int(round(left_px)), int(round(right_px)))
+        if key == self._blend_key:
+            return
+        self._blend_key = key
+        left, right = key
+        if left <= 0 and right <= 0:
+            self._blend_mask = None
+            return
+        ramp = np.ones(self.canvas_w, dtype=np.float32)
+        if left > 0:
+            n = min(left, self.canvas_w)
+            t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+            ramp[:n] = t * t * (3.0 - 2.0 * t)          # smoothstep in
+        if right > 0:
+            n = min(right, self.canvas_w)
+            t = np.linspace(1.0, 0.0, n, dtype=np.float32)
+            ramp[-n:] = np.minimum(ramp[-n:], t * t * (3.0 - 2.0 * t))
+        mask_row = (ramp * 255.0).astype(np.uint8)
+        self._blend_mask = np.ascontiguousarray(
+            np.broadcast_to(mask_row[None, :, None],
+                            (self.canvas_h, self.canvas_w, 3)))
+
     def _tick(self):
         frame = self.latest_frame()
         if frame is not None:
@@ -141,6 +168,8 @@ class PaintEngine(QObject):
             performer.step(self.canvas, 1.0 / self.fps, t_show)
 
         out = self.canvas.step()
+        if self._blend_mask is not None:
+            out = cv2.multiply(out, self._blend_mask, scale=1.0 / 255.0)
         self._last_output = out
         self.projector.show_image(out)
 

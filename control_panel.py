@@ -15,6 +15,8 @@ from paint_engine import PaintEngine
 from paint_canvas import MOOD_NAMES
 from scene_manager import SceneManager
 from autopilot import Autopilot
+from mesh import MeshNode
+from dual_calibration import DualCalibrator
 
 CONFIG_PATH = "config.json"
 
@@ -44,6 +46,10 @@ class ControlPanel(QMainWindow):
         self.calibration = self._make_calibration_engine()
         self.paint_engine = self._make_paint_engine()
 
+        # Mesh node: owned here so it outlives shows and serves dual
+        # calibration; created lazily by _ensure_mesh()
+        self.mesh_node = None
+
         # Autopilot: the set-it-and-forget-it show director
         self.autopilot = Autopilot(
             config,
@@ -53,11 +59,26 @@ class ControlPanel(QMainWindow):
             ensure_camera_fn=self._ensure_camera,
             start_scan_fn=self._start_calibration_scan,
             projector=projector_win,
+            get_mesh=self._ensure_mesh,
         )
         self.autopilot.state_changed.connect(self._on_autopilot_state)
         self.autopilot.program_ready.connect(self._on_autopilot_program)
         self.autopilot.scene_ready.connect(self._on_autopilot_scene)
         self.autopilot.mesh_changed.connect(self._on_mesh_status)
+
+        # Dual calibrator: always listening, so this unit participates
+        # when any box on the mesh leads a calibration
+        self.dual_cal = DualCalibrator(
+            config,
+            get_mesh=lambda: self.mesh_node,
+            projector=projector_win,
+            latest_frame_fn=self._latest_camera_frame,
+            get_calibration=lambda: self.calibration,
+            get_paint_engine=lambda: self.paint_engine,
+            prepare_fn=self._prepare_for_dual_cal,
+        )
+        self.dual_cal.status.connect(self._on_mesh_status)
+        self.dual_cal.finished.connect(self._on_dual_cal_finished)
 
         # Status bar
         self.status = QStatusBar()
@@ -228,6 +249,52 @@ class ControlPanel(QMainWindow):
         if self.camera is None:
             self._start_camera()
         return self.camera is not None
+
+    # ── Mesh node lifecycle ─────────────────────────────────────
+
+    def _ensure_mesh(self):
+        """Bring the mesh node up if enabled; returns it (or None)."""
+        mcfg = self.config.get("mesh", {})
+        if not mcfg.get("enabled", False):
+            return None
+        if self.mesh_node is None:
+            self.mesh_node = MeshNode(
+                port=int(mcfg.get("port", 45454)),
+                broadcast=mcfg.get("broadcast", "255.255.255.255"),
+                position=int(mcfg.get("position", 0)),
+                width_px=self.paint_engine.canvas_w,
+                overlap_px=float(mcfg.get("overlap_px", 0)),
+            )
+        return self.mesh_node
+
+    def _stop_mesh(self):
+        if self.mesh_node is not None:
+            self.mesh_node.stop()
+            self.mesh_node = None
+
+    # ── Dual calibration ────────────────────────────────────────
+
+    def _prepare_for_dual_cal(self):
+        """Go quiet for a mesh calibration: no show, no painting, and
+        the camera up if we have one."""
+        if self.autopilot.running:
+            self._stop_show()
+        if self.paint_engine.is_running:
+            self._stop_painting()
+        return self._ensure_camera() and self.calibration.has_calibration
+
+    def _calibrate_mesh(self):
+        node = self._ensure_mesh()
+        if node is None:
+            self.status.showMessage("Enable mesh first")
+            return
+        self.btn_mesh_calibrate.setEnabled(False)
+        self.status.showMessage("Dual calibration starting — this unit leads")
+        self.dual_cal.lead()
+
+    def _on_dual_cal_finished(self, success, message):
+        self.btn_mesh_calibrate.setEnabled(True)
+        self.status.showMessage(f"Dual calibration: {message}")
 
     # ── Calibration Tab ────────────────────────────────────────
 
@@ -680,6 +747,16 @@ class ControlPanel(QMainWindow):
         mesh_row.addStretch()
         mesh_layout.addLayout(mesh_row)
 
+        cal_mesh_row = QHBoxLayout()
+        self.btn_mesh_calibrate = QPushButton("Calibrate the Mesh")
+        self.btn_mesh_calibrate.setToolTip(
+            "Units take turns flashing patterns while the others watch — "
+            "measuring exactly where their projections overlap")
+        self.btn_mesh_calibrate.clicked.connect(self._calibrate_mesh)
+        cal_mesh_row.addWidget(self.btn_mesh_calibrate)
+        cal_mesh_row.addStretch()
+        mesh_layout.addLayout(cal_mesh_row)
+
         self.mesh_status_label = QLabel("mesh off")
         self.mesh_status_label.setStyleSheet("color: #667; font-size: 11px;")
         mesh_layout.addWidget(self.mesh_status_label)
@@ -687,7 +764,10 @@ class ControlPanel(QMainWindow):
         mesh_note = QLabel(
             "Units on the same network discover each other and share one long "
             "canvas: number them left-to-right and the fish swim across all of "
-            "them in sync. Takes effect when the show starts."
+            "them in sync. Run Calibrate the Mesh once they're placed: each "
+            "unit flashes while the others watch, measuring real overlaps so "
+            "the world lines up exactly and seams are blended. Press it on "
+            "one unit only — the rest follow."
         )
         mesh_note.setStyleSheet("color: #667; font-size: 11px;")
         mesh_note.setWordWrap(True)
@@ -758,6 +838,8 @@ class ControlPanel(QMainWindow):
         mcfg = self.config.setdefault("mesh", {})
         mcfg["enabled"] = self.mesh_enabled.isChecked()
         mcfg["position"] = self.mesh_position.value()
+        if not mcfg["enabled"]:
+            self._stop_mesh()
 
     # ── Settings Tab: the making of the scene ───────────────────
 
@@ -1188,6 +1270,7 @@ class ControlPanel(QMainWindow):
     def closeEvent(self, event):
         if self.autopilot.running:
             self.autopilot.stop()
+        self._stop_mesh()
         if self.calibration.is_scanning:
             self.calibration.cancel_scan()
         self.paint_engine.stop()

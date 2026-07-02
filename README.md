@@ -64,7 +64,16 @@ Enable **Mesh** on units sharing a network, number them left-to-right, and they 
 
 How it works (`mesh.py`): nothing streams frames. Units discover each other by UDP broadcast and share three small things — a **world layout** (each unit owns a slice of a common strip), a **world clock** (the leader broadcasts time; followers track it within a few ms), and a **show state** (seed + mood). Since every performer's trajectory is a pure function of *(seed, world time)*, each unit independently computes identical fish and renders only its slice. Twenty units cost the same bandwidth as two. Units joining or leaving heal the layout automatically.
 
-Today adjacent units butt edge-to-edge by their position number (with a manual overlap trim); automatic overlap discovery via camera dual-calibration is the planned next step.
+### Dual calibration — units learn where they overlap
+
+Once the boxes are placed, press **Calibrate the Mesh** on any one unit (the rest follow automatically). Units take turns flashing gray code patterns while every other unit's camera watches. An observer that can see a neighbor's light decodes camera→neighbor-projector, combines it with its own structured-light calibration, and fits a robust transform: *exactly where the neighbor's canvas sits in its own canvas coordinates* (sub-pixel in simulation).
+
+These measured relations are shared over the mesh and two things happen:
+
+- **The world layout snaps to real geometry.** Offsets come from measurement instead of butt-joints, so a fish crossing a seam lines up exactly. Units that can't see each other simply measure nothing and stay placed by position number.
+- **Seams are blended.** Each unit feathers its output across the measured overlap (smoothstep ramps), so strips covered by two projectors don't glow double — projected light adds physically, and the blend keeps the composite even.
+
+Timing rides on the mesh world clock: the flasher broadcasts a capture cue per pattern with settle/dwell windows (`dual_calibration.settle_ms/dwell_ms`) sized to absorb camera latency.
 
 Try both dreams headless:
 
@@ -126,8 +135,8 @@ Early stage. The foundation is in place -- the rest is being built out.
 - [x] Autonomous mode (self-calibration, scene analysis, director, performers)
 - [x] Local VLM director (Ollama / OpenAI-compatible, instinct fallback)
 - [x] Multi-unit mesh sync (discovery, world clock, shared-world rendering)
+- [x] Mesh dual-calibration (measured overlaps, geometric layout, edge blending)
 - [ ] Hailo-8L scene analysis (YOLOv8-seg surfaces for the director)
-- [ ] Mesh dual-calibration (automatic overlap discovery between neighbors)
 
 ## Setup
 
@@ -235,6 +244,7 @@ pi-paint/
 ├── performers.py        # Show behaviors: auroras, contour tracing, fireflies, fish
 ├── autopilot.py         # Set-it-and-forget-it state machine (calibrate/observe/direct/perform)
 ├── mesh.py              # Multi-unit shared world: UDP discovery, world clock, layout
+├── dual_calibration.py  # Units flash/watch each other to measure real overlaps
 ├── demo_painting.py     # Headless demo/benchmark -- try the feel on any machine
 ├── demo_autopilot.py    # Headless demo: autonomous direction + multi-projector fish tank
 ├── vj/                  # Standalone VJ mode (pygame) for live visuals
