@@ -28,6 +28,20 @@ Try the feel on any machine — no camera, projector, or Pi needed:
 python demo_painting.py          # simulates a flashlight, writes preview frames + timing
 ```
 
+## Scenes — the making of a setup
+
+Setting up at a venue is real work: aim the projector, pick displays, run the calibration scan, tune the feel. **Scenes** make that work durable.
+
+The **Settings** tab covers the whole making of a scene:
+
+- **Displays** — choose which screen gets the control panel and which the projector, with an *Identify Displays* button that flashes each screen's number. Applies live.
+- **Camera** — detect connected cameras, pick device and resolution.
+- **Projector** — set output resolution (invalidates the calibration scan, which is checked against resolution on load).
+- **Calibration timing** — pattern wait and capture delay for the structured light scan.
+- **Scenes** — save the entire setup (all of the above + the painting feel + the calibration scan itself) under a name like `wedding_wall` or `living_room`. Load it back anytime; the last-used scene is restored automatically at startup, so the box powers on ready to paint.
+
+Scenes live in `scenes/<name>/` as a `scene.json` plus that scene's `calibration_data.npz`.
+
 ## How It Works
 
 ```
@@ -76,6 +90,7 @@ Early stage. The foundation is in place -- the rest is being built out.
 - [x] Setup and install scripts
 - [x] Structured light calibration (camera-projector mapping)
 - [x] Interactive light painting (living canvas, light tracking, motion mist, dreams)
+- [x] Settings & scene profiles (displays, camera, projector, saved setups, startup restore)
 - [ ] Hailo-8L scene analysis (YOLOv8-seg)
 - [ ] Claude AI agent integration (animation brain)
 - [ ] Animation / visualization engine
@@ -160,6 +175,8 @@ Edit `config.json` to match your hardware:
 | `painting.render_scale` | Canvas simulation scale (0.75 default; lower = faster on Pi, dreamier) |
 | `painting.motion_mist` | Bodies stir the wall even without a light |
 | `painting.dreams` | Idle wisp that paints to itself when nobody's there |
+| `scenes.dir` | Where scene profiles are stored |
+| `scenes.current` | Scene restored automatically at startup |
 | `agent.model` | Claude model for the AI brain |
 | `agent.refresh_interval_sec` | How often the agent re-evaluates the scene |
 
@@ -175,6 +192,7 @@ pi-paint/
 ├── paint_canvas.py      # The living canvas: energy field, moods, fireflies, dreams (pure numpy/cv2)
 ├── light_tracker.py     # Light + motion detection with projector self-suppression (pure numpy/cv2)
 ├── paint_engine.py      # Qt heartbeat: camera -> tracker -> canvas -> projector
+├── scene_manager.py     # Scene profiles: saved setups (config + calibration bundles)
 ├── demo_painting.py     # Headless demo/benchmark -- try the feel on any machine
 ├── vj/                  # Standalone VJ mode (pygame) for live visuals
 ├── config.json          # Hardware and agent configuration

@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+calibration_data.npz
+scenes/
+demo_frames/
 vj/venv/
 vj/assets/clips/*.mp4
 vj/assets/clips/*.mov

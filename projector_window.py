@@ -28,13 +28,39 @@ class ProjectorWindow(QMainWindow):
     def _position_on_screen(self):
         if self.target_screen is not None:
             geo = self.target_screen.geometry()
-            self.setGeometry(geo)
             self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+            self.setGeometry(geo)
             self.showFullScreen()
         else:
             # Windowed fallback for single-display testing
-            self.setFixedSize(self.proj_w, self.proj_h)
             self.setWindowFlags(Qt.Window)
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
+            self.setFixedSize(self.proj_w, self.proj_h)
+
+    def set_target_screen(self, screen):
+        """Move the projector output to a different display at runtime.
+
+        Pass None for a windowed fallback on the primary display.
+        """
+        self.target_screen = screen
+        if screen is None and self.isFullScreen():
+            self.showNormal()
+        self._position_on_screen()
+        self.show()
+        self.show_solid(QColor(0, 0, 0))
+
+    def set_resolution(self, width, height):
+        """Change the projector render resolution at runtime."""
+        self.proj_w = int(width)
+        self.proj_h = int(height)
+        self.config["projector"]["width"] = self.proj_w
+        self.config["projector"]["height"] = self.proj_h
+        if self.target_screen is None:
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
+            self.setFixedSize(self.proj_w, self.proj_h)
+        self.show_solid(QColor(0, 0, 0))
 
     def show_solid(self, color):
         """Fill the projector with a solid color."""

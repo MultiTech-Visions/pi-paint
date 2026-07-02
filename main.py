@@ -3,6 +3,7 @@ import json
 from PyQt5.QtWidgets import QApplication
 from control_panel import ControlPanel
 from projector_window import ProjectorWindow
+from scene_manager import SceneManager
 
 
 def load_config(path="config.json"):
@@ -10,8 +11,22 @@ def load_config(path="config.json"):
         return json.load(f)
 
 
+def apply_startup_scene(config):
+    """Restore the last-used scene so the box powers on ready to paint."""
+    scenes_cfg = config.get("scenes", {})
+    current = scenes_cfg.get("current") or ""
+    if not current:
+        return
+    manager = SceneManager(scenes_cfg.get("dir", "scenes"))
+    if manager.load_scene(current, config):
+        print(f"Restored scene '{current}'")
+    else:
+        print(f"WARNING: saved scene '{current}' not found — using config.json as-is")
+
+
 def main():
     config = load_config()
+    apply_startup_scene(config)
     app = QApplication(sys.argv)
 
     screens = app.screens()

@@ -74,6 +74,10 @@ class CalibrationEngine(QObject):
         if self._scanning:
             return
 
+        # Re-read timing so Settings changes apply without a restart
+        self.wait_ms = self.config["calibration"]["gray_code_wait_ms"]
+        self.delay_ms = self.config["calibration"]["capture_delay_ms"]
+
         self._patterns = generate_gray_patterns(self.proj_w, self.proj_h)
         self._captures = []
         self._scan_idx = 0
@@ -307,6 +311,9 @@ class CalibrationEngine(QObject):
         if not os.path.exists(path):
             return False
         data = np.load(path)
+        # A scan is only valid for the projector resolution it was made at
+        if int(data["proj_w"]) != self.proj_w or int(data["proj_h"]) != self.proj_h:
+            return False
         self.proj_x = data["proj_x"]
         self.proj_y = data["proj_y"]
         self.confidence = data["confidence"]
