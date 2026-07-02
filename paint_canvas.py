@@ -284,8 +284,8 @@ class PaintCanvas:
         sc = 16.0 / 4.0             # 2**shift / quarter-res factor
         p_ = (int(round(p[0] * sc)), int(round(p[1] * sc)))
         q_ = (int(round(q[0] * sc)), int(round(q[1] * sc)))
-        col = (float(color[0]) * gain, float(color[1]) * gain,
-               float(color[2]) * gain)
+        col = (float(color[0] * gain), float(color[1] * gain),
+               float(color[2] * gain))
         cv2.line(self._line_buf, p_, q_, col,
                  max(1, int(round(thickness))), cv2.LINE_AA, shift=shift)
         self._line_dirty = True

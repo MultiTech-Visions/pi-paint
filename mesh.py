@@ -31,6 +31,8 @@ import threading
 import time
 import uuid
 
+import numpy as np
+
 
 MAGIC = "PIPAINT1"
 PEER_TIMEOUT = 6.0
@@ -125,6 +127,7 @@ class MeshNode:
         """Store a measured relation and share it with the mesh."""
         entry = {"ox": float(rel["ox"]), "oy": float(rel["oy"]),
                  "scale": float(rel.get("scale", 1.0)),
+                 "rot": float(rel.get("rot", 0.0)),
                  "conf": float(rel.get("conf", 0.0))}
         with self._lock:
             self.relations[(obs_id, flasher_id)] = entry
@@ -152,36 +155,52 @@ class MeshNode:
         geometry; unmeasured units fall back to position-ordered
         butt-joints minus the manual overlap trim.
         """
-        offsets, world_w, _ = self._solve_layout()
+        offsets, world_w, _, _ = self._solve_layout()
         return offsets[self.node_id], world_w, len(offsets)
 
     def blend_spans(self):
         """Measured overlap with neighbors: (left_px, right_px) of this
         unit's canvas that other units also cover — the strips to
         feather so doubled projection doesn't glow twice."""
-        offsets, _, widths = self._solve_layout()
-        my_off = offsets[self.node_id]
-        my_w = widths[self.node_id]
+        _, _, spans, _ = self._solve_layout()
+        wx0, wx1 = spans[self.node_id]
+        span_w = max(wx1 - wx0, 1e-6)
+        px_per_world = self.width_px / span_w
         left = right = 0.0
-        for nid, off in offsets.items():
+        for nid, (ox0, ox1) in spans.items():
             if nid == self.node_id:
                 continue
-            w = widths[nid]
-            if off < my_off:
-                left = max(left, (off + w) - my_off)
-            elif off > my_off:
-                right = max(right, (my_off + my_w) - off)
-        return (max(0.0, min(float(left), my_w)),
-                max(0.0, min(float(right), my_w)))
+            if ox0 < wx0:
+                left = max(left, ox1 - wx0)
+            elif ox0 > wx0:
+                right = max(right, wx1 - ox0)
+        return (max(0.0, min(left * px_per_world, self.width_px)),
+                max(0.0, min(right * px_per_world, self.width_px)))
+
+    @staticmethod
+    def _rel_affine(r):
+        """Relation -> (A, t): observer-canvas point -> flasher-canvas."""
+        s, th = r.get("scale", 1.0), r.get("rot", 0.0)
+        c, sn = np.cos(th) * s, np.sin(th) * s
+        A = np.array([[c, -sn], [sn, c]], np.float64)
+        t = -A @ np.array([r["ox"], r["oy"]], np.float64)
+        return A, t
 
     def _solve_layout(self):
-        """offsets/widths for every known unit, identical on all units.
+        """World placement for every known unit, identical on all units.
 
-        Measured relations form a graph (edge: flasher_offset =
-        observer_offset + ox); BFS from the lowest-id measured unit
-        places the connected component; anything unmeasured is appended
-        after the current extent in (position, id) order.  Offsets are
-        normalized so the leftmost unit sits at 0.
+        Each unit gets a full affine transform world→canvas.  Measured
+        relations form a graph; BFS from the lowest-id measured unit
+        (the anchor, whose canvas frame *is* the world frame) chains
+        the affines, so rotated or scaled neighbors are placed with
+        their true orientation, not just an offset.  Unmeasured units
+        are appended by position order; world x is normalized so the
+        leftmost canvas corner sits at 0.
+
+        Returns (offsets, world_w, spans, transforms):
+          offsets: unit -> leftmost world x of its canvas
+          spans:   unit -> (wx0, wx1) world x range of its canvas
+          transforms: unit -> (A, t) mapping world -> unit canvas
         """
         with self._lock:
             units = {self.node_id: (self.position, self.width_px)}
@@ -189,48 +208,74 @@ class MeshNode:
                 units[nid] = (p["position"], p["width"])
             rels = dict(self.relations)
 
-        # Undirected offset edges between known units, best-confidence
-        # relation wins when both directions were measured
+        # Best-confidence edge per pair when both directions measured
         edges = {}
         for (obs, fl), r in rels.items():
             if obs not in units or fl not in units:
                 continue
             key = tuple(sorted((obs, fl)))
-            cand = (r["conf"], obs, fl, r["ox"])
-            if key not in edges or cand[0] > edges[key][0]:
-                edges[key] = cand
+            if key not in edges or r["conf"] > edges[key][0]:
+                edges[key] = (r["conf"], obs, fl, r)
 
         adj = {}
-        for _, obs, fl, ox in edges.values():
-            adj.setdefault(obs, []).append((fl, ox))
-            adj.setdefault(fl, []).append((obs, -ox))
+        for _, obs, fl, r in edges.values():
+            A, t = self._rel_affine(r)
+            adj.setdefault(obs, []).append((fl, A, t, False))
+            adj.setdefault(fl, []).append((obs, A, t, True))
 
-        offsets = {}
+        I = np.eye(2)
+        transforms = {}
         if adj:
             anchor = min(nid for nid in adj if nid in units)
-            offsets[anchor] = 0.0
+            transforms[anchor] = (I.copy(), np.zeros(2))
             queue = [anchor]
             while queue:
                 cur = queue.pop(0)
-                for nxt, dx in adj.get(cur, []):
-                    if nxt not in offsets:
-                        offsets[nxt] = offsets[cur] + dx
-                        queue.append(nxt)
+                A_c, t_c = transforms[cur]
+                for nxt, A_m, t_m, inverse in adj.get(cur, []):
+                    if nxt in transforms:
+                        continue
+                    if inverse:     # cur = M(nxt) ⇒ T_nxt = M⁻¹ ∘ T_cur
+                        A_inv = np.linalg.inv(A_m)
+                        transforms[nxt] = (A_inv @ A_c, A_inv @ (t_c - t_m))
+                    else:           # nxt = M(cur) ⇒ T_nxt = M ∘ T_cur
+                        transforms[nxt] = (A_m @ A_c, A_m @ t_c + t_m)
+                    queue.append(nxt)
 
-        # Unmeasured units: butt-joint after the current extent
-        extent = max((offsets[n] + units[n][1] for n in offsets), default=0.0)
-        rest = sorted((units[n][0], n) for n in units if n not in offsets)
+        def world_span(nid):
+            """World x range of a unit's canvas (corners through T⁻¹)."""
+            A, t = transforms[nid]
+            w = units[nid][1]
+            h = w * 9.0 / 16.0      # aspect only affects tilt margins
+            corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], np.float64)
+            world = (np.linalg.inv(A) @ (corners - t).T).T
+            return float(world[:, 0].min()), float(world[:, 0].max())
+
+        # Unmeasured units: butt-joint after the measured extent
+        extent = max((world_span(n)[1] for n in transforms), default=0.0)
+        rest = sorted((units[n][0], n) for n in units if n not in transforms)
         for _, nid in rest:
             off = extent - self.overlap_px if extent > 0 else 0.0
-            offsets[nid] = off
+            transforms[nid] = (I.copy(), np.array([-off, 0.0]))
             extent = off + units[nid][1]
 
-        # Normalize: leftmost unit at 0
-        m = min(offsets.values())
-        offsets = {nid: off - m for nid, off in offsets.items()}
-        widths = {nid: units[nid][1] for nid in units}
-        world_w = max(offsets[n] + widths[n] for n in units)
-        return offsets, max(world_w, self.width_px), widths
+        # Normalize world x so the leftmost corner sits at 0
+        spans = {nid: world_span(nid) for nid in units}
+        m = min(s[0] for s in spans.values())
+        shift = np.array([m, 0.0])
+        for nid in transforms:
+            A, t = transforms[nid]
+            transforms[nid] = (A, A @ shift + t)
+        spans = {nid: (s[0] - m, s[1] - m) for nid, s in spans.items()}
+
+        offsets = {nid: spans[nid][0] for nid in units}
+        world_w = max(s[1] for s in spans.values())
+        return offsets, max(world_w, self.width_px), spans, transforms
+
+    def world_transform(self):
+        """This unit's (A, t): world point -> own canvas point."""
+        _, _, _, transforms = self._solve_layout()
+        return transforms[self.node_id]
 
     def world(self):
         """A world adapter for performers (FishTank et al.)."""
@@ -308,6 +353,7 @@ class MeshNode:
                         self.relations[(r["obs"], r["fl"])] = {
                             "ox": float(r["ox"]), "oy": float(r["oy"]),
                             "scale": float(r.get("scale", 1.0)),
+                            "rot": float(r.get("rot", 0.0)),
                             "conf": float(r.get("conf", 0.0)),
                         }
                     except (KeyError, TypeError, ValueError):
@@ -323,7 +369,13 @@ class MeshNode:
 
 
 class _MeshWorld:
-    """World adapter: live view of the mesh for performers."""
+    """World adapter: live view of the mesh for performers.
+
+    to_canvas() applies the full measured affine, so world content
+    lands correctly even when this unit's canvas is rotated or scaled
+    relative to its neighbors (non-coplanar fence panels, tilted
+    mounts) — a fish crossing the seam bends with the surface.
+    """
 
     def __init__(self, node):
         self._node = node
@@ -332,6 +384,12 @@ class _MeshWorld:
     def _refresh(self):
         self.offset_px, self.world_w, _ = self._node.layout()
         self.seed = self._node.show_state()["seed"]
+        self._A, self._t = self._node.world_transform()
 
     def now(self):
         return self._node.now()
+
+    def to_canvas(self, x, y):
+        """World point -> this unit's canvas point."""
+        return (self._A[0, 0] * x + self._A[0, 1] * y + self._t[0],
+                self._A[1, 0] * x + self._A[1, 1] * y + self._t[1])

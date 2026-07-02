@@ -71,10 +71,12 @@ def estimate_neighbor_transform(nb_x, nb_y, nb_conf, own_x, own_y, own_conf,
         return None
     origin = np.linalg.solve(A, -t)     # where neighbor's (0,0) lands in ours
     scale = float(np.sqrt(abs(det)))    # neighbor px per own px
+    rot = float(np.arctan2(A[1, 0], A[0, 0]))   # neighbor's tilt vs ours
     return {
         "ox": float(origin[0]),
         "oy": float(origin[1]),
         "scale": scale,
+        "rot": rot,
         "conf": ratio,
         "n": int(len(ys)),
     }
@@ -328,6 +330,7 @@ class DualCalibrator(QObject):
         self.status.emit(
             f"measured {flasher_id}: origin at ({rel['ox']:.0f}, "
             f"{rel['oy']:.0f}) in my canvas, scale {rel['scale']:.2f}, "
+            f"tilt {np.degrees(rel['rot']):.1f}°, "
             f"confidence {rel['conf']:.2f}")
 
 

@@ -56,7 +56,23 @@ Two directors:
 - **Instinct** (default) — built-in CV rules, fully offline, zero setup. Dark expanses become aquariums, distinct objects get their silhouettes traced in light, big walls host auroras, warm corners breathe and spark.
 - **Local VLM** — point it at Ollama or any OpenAI-compatible server running a small vision model on the Pi (`moondream`, `llava-phi3`, `qwen2.5vl`). The model sees the scene photo plus the surface data and writes the program — including the theme line. Model output is validated against reality (hallucinated behaviors dropped, bad region ids remapped), and *any* failure falls back to instinct. The show always goes on.
 
-Performers: `aurora_drift`, `contour_trace` (light forever tracing the outline of a physical object it found), `fireflies`, `breathing_glow`, `fish_tank`, and `perspective_box` — a wireframe box whose depth breathes in and out of the surface, a fake-3D illusion you can throw on any wall. Its `perspective` option (`left`/`right`/`up`/`down`/`center`, default `auto`) sets which way the depth recedes, so the illusion matches the angle the surface is seen from — a box on the right side of the room should lean differently than one on the left. `auto` recedes toward the canvas center (correct one-point perspective for a viewer facing the middle); the VLM director can choose it per surface.
+The cast of performers:
+
+| Performer | Character |
+|-----------|-----------|
+| `aurora_drift` | A wisp sweeping slowly along a surface's long axis |
+| `contour_trace` | Light forever tracing the outline of a physical object it found |
+| `fireflies` | Motes rising now and then from within a surface |
+| `breathing_glow` | A pool of light breathing at a surface's heart |
+| `fish_tank` | Fish in a shared world — across every meshed projector in sync |
+| `perspective_box` | A wireframe box whose depth breathes in and out of the wall — fake 3D. Its `perspective` option (`left`/`right`/`up`/`down`/`center`, default `auto`) sets which way the depth recedes so the illusion matches the viewing angle |
+| `constellation` | Drifting stars that form and break living constellations |
+| `rain` | Streaks of light falling through a surface, splashing into motes |
+| `orbits` | A tiny solar system: bodies circling a breathing sun, leaving comet trails |
+| `pulse_rings` | Rings rippling out from a point, like rain on water |
+| `tendrils` | Vines of light growing across the surface, forking, dissolving, regrowing |
+
+The instinct director picks an accent from the newer performers using the scene's fingerprint, so different rooms get different shows; the VLM director can cast any of them per surface.
 
 ## Mesh — one world across many projectors
 
@@ -71,6 +87,7 @@ Once the boxes are placed, press **Calibrate the Mesh** on any one unit (the res
 These measured relations are shared over the mesh and two things happen:
 
 - **The world layout snaps to real geometry.** Offsets come from measurement instead of butt-joints, so a fish crossing a seam lines up exactly. Units that can't see each other simply measure nothing and stay placed by position number.
+- **Content follows the surface.** The measured transform is a full affine (offset, scale, *and* rotation), chained through the mesh so every unit knows world→its-canvas exactly. World performers place every point through it — a fish crossing onto a tilted fence panel bends with the panel instead of breaking at the seam.
 - **Seams are blended.** Each unit feathers its output across the measured overlap (smoothstep ramps), so strips covered by two projectors don't glow double — projected light adds physically, and the blend keeps the composite even.
 
 Timing rides on the mesh world clock: the flasher broadcasts a capture cue per pattern with settle/dwell windows (`dual_calibration.settle_ms/dwell_ms`) sized to absorb camera latency.

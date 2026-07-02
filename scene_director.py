@@ -185,7 +185,15 @@ class InstinctDirector:
             textured = max(surfaces, key=lambda s: s["edge_density"])
             if textured["edge_density"] > 0.06:
                 behaviors.append({"type": "contour_trace", "region": textured["id"]})
+            # An accent picked deterministically from the scene's
+            # fingerprint — different rooms get different accents, the
+            # same room gets the same one
+            accents = ["pulse_rings", "orbits", "constellation",
+                       "rain", "tendrils"]
+            fingerprint = int(scene_brightness * 997) + len(surfaces) * 31
             second = surfaces[1] if len(surfaces) > 1 else big
+            behaviors.append({"type": accents[fingerprint % len(accents)],
+                              "region": second["id"]})
             behaviors.append({"type": "fireflies", "region": second["id"]})
             # A compact, clean patch earns the 3D box illusion; otherwise
             # the brightest small surface breathes instead
@@ -232,13 +240,16 @@ Respond with ONLY a JSON object:
  "tempo": <0.0-1.0>,
  "behaviors": [{{"type": "<behavior>", "region": <surface id>}}, ...]}}
 
-Pick 2-4 behaviors. Match them to what the surfaces are: dark expanses suit \
-fish_tank, distinct objects suit contour_trace, big open walls suit \
-aurora_drift, warm corners suit breathing_glow or fireflies, and a clean \
-patch suits perspective_box (a breathing 3D box illusion). A perspective_box \
-behavior may add "perspective": "left"|"right"|"up"|"down"|"center" — the \
-direction its depth recedes; pick what matches the angle that surface is \
-seen from (omit for auto, which recedes toward the canvas center)."""
+Pick 2-5 behaviors. Match them to what the surfaces are: dark expanses suit \
+fish_tank or constellation, distinct objects suit contour_trace, big open \
+walls suit aurora_drift or rain (falling streaks that splash), warm corners \
+suit breathing_glow or fireflies, a focal point suits orbits (a tiny solar \
+system) or pulse_rings (ripples), textured areas suit tendrils (vines of \
+light that grow and dissolve), and a clean patch suits perspective_box (a \
+breathing 3D box illusion). A perspective_box behavior may add \
+"perspective": "left"|"right"|"up"|"down"|"center" — the direction its depth \
+recedes; pick what matches the angle that surface is seen from (omit for \
+auto, which recedes toward the canvas center)."""
 
 
 class VLMDirector:

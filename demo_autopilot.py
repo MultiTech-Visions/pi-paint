@@ -97,6 +97,9 @@ class _SimWorld:
     def now(self):
         return self._clock[0]
 
+    def to_canvas(self, x, y):
+        return x - self.offset_px, y
+
 
 def _smoothstep_ramp(width, left, right):
     ramp = np.ones(width, np.float32)

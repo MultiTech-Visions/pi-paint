@@ -35,6 +35,9 @@ class LocalWorld:
     def now(self):
         return self._time.monotonic() - self._t0
 
+    def to_canvas(self, x, y):
+        return x, y
+
 
 class Performer:
     """Base: step(canvas, dt, t) paints one tick of the behavior."""
@@ -293,31 +296,288 @@ class FishTank(Performer):
         wrap = self.world.world_w + 2 * margin
         for i in range(self.n):
             head_wx = (self.f_x0[i] + self.f_dir[i] * self.f_speed[i] * wt) % wrap - margin
+            # Quick cull in world x before doing per-segment transforms
             lx = head_wx - self.world.offset_px
             if lx < -margin or lx > self.canvas_w + margin:
                 continue
             color = canvas.palette(self.f_hue[i])
-            # Spine: head + trailing segments with a travelling wiggle
+            # Spine: head + trailing segments with a travelling wiggle,
+            # each point placed through the measured world→canvas
+            # transform so fish bend correctly across tilted units
             seg = 9.0 * self.f_size[i] * 2.2
             for k in range(6):
-                sx = lx - self.f_dir[i] * k * seg
+                swx = head_wx - self.f_dir[i] * k * seg
                 ph = self.f_freq[i] * 2 * np.pi * wt + self.f_phase[i] - k * 0.75
-                sy = self.f_y0[i] + self.f_amp[i] * np.sin(ph)
+                swy = self.f_y0[i] + self.f_amp[i] * np.sin(ph)
+                cx, cy = self.world.to_canvas(swx, swy)
                 fade = (1.0 - k / 6.0)
-                canvas.dab(sx, sy, color, gain=0.55 * fade ** 1.5,
+                canvas.dab(cx, cy, color, gain=0.55 * fade ** 1.5,
                            width=self.f_size[i] * (1.0 - 0.09 * k))
         # A bubble now and then, from wherever a fish just was
         if t >= self._bubble_next and self.n > 0:
             self._bubble_next = t + self._local_rng.uniform(1.2, 3.0)
             i = int(self._local_rng.integers(0, self.n))
             head_wx = (self.f_x0[i] + self.f_dir[i] * self.f_speed[i] * wt) % wrap - margin
-            lx = head_wx - self.world.offset_px
-            if 0 <= lx < self.canvas_w:
-                sy = float(self.f_y0[i])
-                pos = np.array([[lx, sy]], np.float32)
+            cx, cy = self.world.to_canvas(head_wx, float(self.f_y0[i]))
+            if 0 <= cx < self.canvas_w:
+                pos = np.array([[cx, cy]], np.float32)
                 vel = np.array([[0.0, -26.0]], np.float32)
                 col = (canvas.palette(0.5) * 0.7)[None, :]
                 canvas.motes(pos, vel, col, life=(1.5, 3.0))
+
+
+class Constellation(Performer):
+    """Drifting stars that form and break living constellations.
+
+    Points wander slowly inside the surface; glow lines connect the
+    ones that drift near each other — a star map that keeps redrawing
+    itself."""
+
+    def __init__(self, surface, w, h, tempo=0.5, seed=0):
+        self.rng = np.random.default_rng(seed)
+        if surface and surface.get("bbox"):
+            x0, y0, x1, y1 = surface["bbox"]
+        else:
+            x0, y0, x1, y1 = w * 0.1, h * 0.1, w * 0.9, h * 0.9
+        self.bounds = (x0, y0, x1, y1)
+        n = 11
+        self.pos = self.rng.uniform([x0, y0], [x1, y1], (n, 2)).astype(np.float32)
+        self.vel = self.rng.normal(0, 4.5, (n, 2)).astype(np.float32)
+        self.tw_phase = self.rng.uniform(0, 6.28, n).astype(np.float32)
+        self.link_r = max(70.0, 0.35 * min(x1 - x0, y1 - y0))
+        self.hue_off = self.rng.uniform(0, 1)
+        self.speed = 0.6 + 0.9 * tempo
+
+    def step(self, canvas, dt, t):
+        x0, y0, x1, y1 = self.bounds
+        self.vel += self.rng.normal(0, 1.6, self.vel.shape).astype(np.float32) * dt * 10
+        self.vel *= 0.995
+        self.pos += self.vel * dt * self.speed
+        # Soft bounce at the surface's edges
+        for axis, lo, hi in ((0, x0, x1), (1, y0, y1)):
+            low = self.pos[:, axis] < lo
+            high = self.pos[:, axis] > hi
+            self.vel[low | high, axis] *= -1
+            self.pos[:, axis] = np.clip(self.pos[:, axis], lo, hi)
+
+        col_star = canvas.palette(self.hue_off)
+        col_line = canvas.palette(self.hue_off + 0.08)
+        tw = 0.5 + 0.5 * np.sin(t * 2.1 + self.tw_phase)
+        for i, p in enumerate(self.pos):
+            # Crisp twinkling star on the fast field; a whisper of it
+            # lingers on the slow field as it drifts
+            canvas.glow_line(p, p, col_star, gain=0.45 + 0.4 * tw[i])
+            canvas.dab(p[0], p[1], col_star, gain=0.035, width=0.2)
+        # Lines between close pairs, brightening as they near
+        d = np.linalg.norm(self.pos[:, None] - self.pos[None, :], axis=2)
+        ii, jj = np.nonzero((d < self.link_r) & (d > 1.0))
+        for i, j in zip(ii, jj):
+            if i < j:
+                g = 0.3 * (1.0 - d[i, j] / self.link_r)
+                canvas.glow_line(self.pos[i], self.pos[j], col_line, gain=g)
+
+
+class RainOfLight(Performer):
+    """Streaks of light falling through a surface, splashing at its
+    lower edge into motes."""
+
+    def __init__(self, surface, w, h, tempo=0.5, seed=0):
+        self.rng = np.random.default_rng(seed)
+        if surface and surface.get("bbox"):
+            x0, y0, x1, y1 = surface["bbox"]
+        else:
+            x0, y0, x1, y1 = 0, 0, w, h
+        self.bounds = (x0, y0, x1, y1)
+        self.max_drops = 6 + int(8 * tempo)
+        self.drops = []                 # [x, y, vy, hue]
+        self.spawn_acc = 0.0
+        self.rate = 2.0 + 6.0 * tempo   # drops per second
+        self.hue_off = self.rng.uniform(0, 1)
+
+    def step(self, canvas, dt, t):
+        x0, y0, x1, y1 = self.bounds
+        self.spawn_acc += dt * self.rate
+        while self.spawn_acc >= 1.0 and len(self.drops) < self.max_drops:
+            self.spawn_acc -= 1.0
+            self.drops.append([self.rng.uniform(x0, x1), y0,
+                               self.rng.uniform(150, 260),
+                               self.rng.uniform(-0.06, 0.06)])
+        splashed = []
+        for drop in self.drops:
+            drop[1] += drop[2] * dt
+            color = canvas.palette(self.hue_off + drop[3])
+            tail = drop[2] * 0.075
+            canvas.glow_line((drop[0], drop[1] - tail), (drop[0], drop[1]),
+                             color, gain=0.34)
+            if drop[1] >= y1:
+                splashed.append(drop)
+        for drop in splashed:
+            self.drops.remove(drop)
+            k = int(self.rng.integers(2, 5))
+            pos = np.tile([drop[0], y1], (k, 1)).astype(np.float32)
+            vel = self.rng.normal(0, 30, (k, 2)).astype(np.float32)
+            vel[:, 1] = -np.abs(vel[:, 1]) * 0.8
+            col = np.tile(canvas.palette(self.hue_off + drop[3]) * 0.8, (k, 1))
+            canvas.motes(pos, vel, col, life=(0.6, 1.6))
+
+
+class Orbits(Performer):
+    """A tiny solar system: glowing bodies circling a breathing sun,
+    inner ones faster, leaving comet trails on the slow field."""
+
+    def __init__(self, surface, w, h, tempo=0.5, seed=0):
+        self.cx, self.cy = surface["centroid"] if surface else (w * 0.5, h * 0.5)
+        rng = np.random.default_rng(seed)
+        if surface and surface.get("bbox"):
+            x0, y0, x1, y1 = surface["bbox"]
+            r_max = 0.42 * min(x1 - x0, y1 - y0)
+        else:
+            r_max = 0.3 * min(w, h)
+        r_max = max(r_max, 40.0)
+        self.n = 3
+        self.radius = np.linspace(0.35, 1.0, self.n) * r_max
+        # Kepler-flavored: inner orbits faster
+        self.omega = (0.5 + tempo) * 1.6 / np.sqrt(self.radius / self.radius[0])
+        self.phase = rng.uniform(0, 6.28, self.n)
+        self.tilt = rng.uniform(0.5, 0.8, self.n)    # ellipse squash
+        self.hue = rng.uniform(0, 1, self.n)
+        self.sun_phase = rng.uniform(0, 6.28)
+        ang = np.linspace(0, 2 * np.pi, 25)
+        self._pcos, self._psin = np.cos(ang), np.sin(ang)
+
+    def step(self, canvas, dt, t):
+        breath = 0.5 + 0.5 * np.sin(0.5 * t + self.sun_phase)
+        canvas.dab(self.cx, self.cy, canvas.palette(0.0),
+                   gain=0.04 + 0.08 * breath, width=0.7)
+        canvas.glow_line((self.cx, self.cy), (self.cx, self.cy),
+                         canvas.palette(0.0), gain=0.5 + 0.3 * breath)
+        for i in range(self.n):
+            color = canvas.palette(self.hue[i])
+            # Faint orbit path so the celestial mechanics read
+            xs = self.cx + self.radius[i] * self._pcos
+            ys = self.cy + self.radius[i] * self.tilt[i] * self._psin
+            for k in range(24):
+                canvas.glow_line((xs[k], ys[k]), (xs[k + 1], ys[k + 1]),
+                                 color, gain=0.045)
+            a = self.omega[i] * t + self.phase[i]
+            x = self.cx + self.radius[i] * np.cos(a)
+            y = self.cy + self.radius[i] * self.tilt[i] * np.sin(a)
+            # Crisp body + a soft comet trail left on the slow field
+            canvas.glow_line((x, y), (x, y), color, gain=0.8)
+            canvas.dab(x, y, color, gain=0.12, width=0.28)
+
+
+class PulseRings(Performer):
+    """Rings of light rippling out from a point, like rain on water."""
+
+    SEGMENTS = 26
+
+    def __init__(self, surface, w, h, tempo=0.5, seed=0):
+        self.cx, self.cy = surface["centroid"] if surface else (w * 0.5, h * 0.5)
+        if surface and surface.get("bbox"):
+            x0, y0, x1, y1 = surface["bbox"]
+            self.r_max = 0.55 * max(x1 - x0, y1 - y0)
+        else:
+            self.r_max = 0.4 * max(w, h)
+        self.speed = 40 + 60 * tempo            # px/s ring growth
+        self.rng = np.random.default_rng(seed)
+        self.interval = max(1.2, 4.5 - 3.0 * tempo)
+        self._next = 0.5
+        self.rings = []                         # birth times
+        self.hue_off = self.rng.uniform(0, 1)
+        ang = np.linspace(0, 2 * np.pi, self.SEGMENTS + 1)
+        self._cos, self._sin = np.cos(ang), np.sin(ang)
+
+    def step(self, canvas, dt, t):
+        if t >= self._next and len(self.rings) < 3:
+            self._next = t + self.interval * self.rng.uniform(0.7, 1.3)
+            self.rings.append(t)
+        alive = []
+        for t0 in self.rings:
+            r = (t - t0) * self.speed
+            if r >= self.r_max:
+                continue
+            alive.append(t0)
+            fade = (1.0 - r / self.r_max) ** 1.1
+            color = canvas.palette(self.hue_off + 0.1 * (t - t0))
+            xs = self.cx + r * self._cos
+            ys = self.cy + r * self._sin * 0.92      # slight squash: on a wall
+            for k in range(self.SEGMENTS):
+                canvas.glow_line((xs[k], ys[k]), (xs[k + 1], ys[k + 1]),
+                                 color, gain=0.5 * fade)
+        self.rings = alive
+
+
+class Tendrils(Performer):
+    """Vines of light growing across the surface, forking, dissolving,
+    and regrowing — painted onto the slow field, so the canvas itself
+    remembers and melts them like ivy in a dream."""
+
+    MAX_TIPS = 5
+
+    def __init__(self, surface, w, h, tempo=0.5, seed=0):
+        self.rng = np.random.default_rng(seed)
+        if surface and surface.get("bbox"):
+            self.bounds = surface["bbox"]
+        else:
+            self.bounds = (w * 0.05, h * 0.05, w * 0.95, h * 0.95)
+        self.speed = 26 + 40 * tempo            # growth px/s
+        self.hue_off = self.rng.uniform(0, 1)
+        self.tips = []
+        self._sprout(t=0.0)
+
+    def _sprout(self, t):
+        x0, y0, x1, y1 = self.bounds
+        # New vines climb from a surface edge
+        edge = int(self.rng.integers(0, 4))
+        if edge == 0:
+            pos = [self.rng.uniform(x0, x1), y1]; heading = -np.pi / 2
+        elif edge == 1:
+            pos = [self.rng.uniform(x0, x1), y0]; heading = np.pi / 2
+        elif edge == 2:
+            pos = [x0, self.rng.uniform(y0, y1)]; heading = 0.0
+        else:
+            pos = [x1, self.rng.uniform(y0, y1)]; heading = np.pi
+        self.tips.append({"pos": np.array(pos, np.float32),
+                          "heading": heading, "born": t,
+                          "life": self.rng.uniform(6.0, 14.0),
+                          "hue": self.hue_off + self.rng.uniform(-0.08, 0.08)})
+
+    def step(self, canvas, dt, t):
+        x0, y0, x1, y1 = self.bounds
+        survivors = []
+        for tip in self.tips:
+            age = t - tip["born"]
+            if age > tip["life"]:
+                continue
+            tip["heading"] += self.rng.normal(0, 1.4) * dt * 3.0
+            step_len = self.speed * dt
+            tip["pos"][0] += step_len * np.cos(tip["heading"])
+            tip["pos"][1] += step_len * np.sin(tip["heading"])
+            px, py = tip["pos"]
+            if not (x0 - 20 <= px <= x1 + 20 and y0 - 20 <= py <= y1 + 20):
+                continue
+            # Paint onto the slow field: the canvas remembers the vine —
+            # with a bright growing tip on the crisp field
+            color = canvas.palette(tip["hue"])
+            canvas.dab(px, py, color, gain=0.4, width=0.3)
+            canvas.glow_line((px, py), (px, py), color, gain=0.55)
+            # Occasional fork; occasional leaf-mote
+            if len(self.tips) < self.MAX_TIPS and self.rng.random() < 0.4 * dt:
+                self.tips.append({"pos": tip["pos"].copy(),
+                                  "heading": tip["heading"]
+                                  + self.rng.choice([-1, 1]) * 0.8,
+                                  "born": t,
+                                  "life": self.rng.uniform(3.0, 8.0),
+                                  "hue": tip["hue"] + 0.05})
+            if self.rng.random() < 0.25 * dt:
+                canvas.motes(np.array([[px, py]], np.float32),
+                             self.rng.normal(0, 8, (1, 2)).astype(np.float32),
+                             (color * 0.8)[None, :], life=(2.0, 4.0))
+            survivors.append(tip)
+        self.tips = survivors
+        if not self.tips:
+            self._sprout(t)
 
 
 # ── Casting ─────────────────────────────────────────────────────────────
@@ -329,6 +589,11 @@ REGISTRY = {
     "contour_trace": ContourTrace,
     "fish_tank": FishTank,
     "perspective_box": PerspectiveBox,
+    "constellation": Constellation,
+    "rain": RainOfLight,
+    "orbits": Orbits,
+    "pulse_rings": PulseRings,
+    "tendrils": Tendrils,
 }
 
 BEHAVIOR_NAMES = list(REGISTRY.keys())
