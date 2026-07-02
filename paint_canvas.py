@@ -163,7 +163,19 @@ class PaintCanvas:
 
         # Brush sprite: bright core + wide soft skirt (precomputed, rescaled per use)
         self._sprite = self._make_sprite(43)
+        self._sprite_cache = {}     # width-keyed rescales (performers redraw a lot)
         self._ones3 = np.ones((1, 3), dtype=np.float32)   # fast channel-sum kernel
+
+        # Shared glow-line layer (quarter res): performers draw wireframes
+        # here with cv2.line; step() composites the whole layer in one
+        # blur+upscale+add, so ten boxes cost the same as one.
+        self._line_buf = np.zeros((self.h // 4, self.w // 4, 3), np.float32)
+        self._line_dirty = False
+        # Lines live in their own fast-fading field: no drift, no
+        # diffusion, ~0.35s half-life — wireframes stay crisp while the
+        # painting behind them keeps its long dreamy memory.
+        self.E_line = np.zeros((self.h, self.w, 3), dtype=np.float32)
+        self._line_decay = 0.5 ** (1.0 / (fps * 0.35))
 
         self.t = 0                  # frame counter
         self.idle_frames = 10 ** 9  # start "long idle" so dreams can begin softly
@@ -262,6 +274,22 @@ class PaintCanvas:
                              np.asarray(colors, np.float32),
                              life_range=life)
 
+    def glow_line(self, p, q, color, gain=0.4, thickness=1.0):
+        """Draw one glowing line segment (canvas coords, sub-pixel).
+
+        Batched: all lines drawn this frame are composited together in
+        step().  This is the primitive for wireframe performers.
+        """
+        shift = 4                   # fixed-point sub-pixel positioning
+        sc = 16.0 / 4.0             # 2**shift / quarter-res factor
+        p_ = (int(round(p[0] * sc)), int(round(p[1] * sc)))
+        q_ = (int(round(q[0] * sc)), int(round(q[1] * sc)))
+        col = (float(color[0]) * gain, float(color[1]) * gain,
+               float(color[2]) * gain)
+        cv2.line(self._line_buf, p_, q_, col,
+                 max(1, int(round(thickness))), cv2.LINE_AA, shift=shift)
+        self._line_dirty = True
+
     def release(self):
         """Let it go: the painting dissolves upward into fireflies."""
         lum = cv2.transform(self.E, self._ones3)
@@ -302,6 +330,18 @@ class PaintCanvas:
 
         self._dream()
 
+        # Composite this frame's glow lines (wireframe performers)
+        self.E_line *= self._line_decay
+        if self._line_dirty:
+            lb = cv2.GaussianBlur(self._line_buf, (0, 0), 1.1)
+            up = cv2.resize(lb, (self.w, self.h),
+                            interpolation=cv2.INTER_LINEAR)
+            lum = cv2.transform(self.E_line, self._ones3)
+            brake = np.clip(1.0 - lum / (self.E_SATURATE * 1.2), 0.0, 1.0)
+            self.E_line += up * brake[:, :, None]
+            self._line_buf[:] = 0
+            self._line_dirty = False
+
         # Old bright regions occasionally exhale a firefly
         if self.t % 9 == 0:
             self._shed_from_field()
@@ -336,8 +376,15 @@ class PaintCanvas:
     def _stamp(self, x, y, color, gain, width_scale):
         sp = self._sprite
         if abs(width_scale - 1.0) > 0.08:
-            new = max(9, int(sp.shape[0] * width_scale)) | 1
-            sp = cv2.resize(sp, (new, new), interpolation=cv2.INTER_LINEAR)
+            key = int(round(width_scale * 20))
+            sp = self._sprite_cache.get(key)
+            if sp is None:
+                new = max(9, int(self._sprite.shape[0] * key / 20.0)) | 1
+                sp = cv2.resize(self._sprite, (new, new),
+                                interpolation=cv2.INTER_LINEAR)
+                if len(self._sprite_cache) > 48:
+                    self._sprite_cache.clear()
+                self._sprite_cache[key] = sp
         r = sp.shape[0] // 2
         xi, yi = int(round(x)), int(round(y))
         x0, x1 = max(0, xi - r), min(self.w, xi + r + 1)
@@ -412,14 +459,15 @@ class PaintCanvas:
 
     def _compose(self):
         """Bloom + filmic tonemap + sparkle -> uint8 RGB frame."""
+        total = cv2.add(self.E, self.E_line)
         # Wide bloom computed at quarter resolution (cheap, dreamy)
-        small = cv2.resize(self.E, (self.w // 4, self.h // 4),
+        small = cv2.resize(total, (self.w // 4, self.h // 4),
                            interpolation=cv2.INTER_AREA)
         small = cv2.GaussianBlur(small, (0, 0), 3.0)
         glow = cv2.resize(small, (self.w, self.h), interpolation=cv2.INTER_LINEAR)
 
-        # -1.1 * (E + 0.7*glow) folded into one pass
-        neg_L = cv2.addWeighted(self.E, -1.1, glow, -0.77, 0)
+        # -1.1 * (total + 0.7*glow) folded into one pass
+        neg_L = cv2.addWeighted(total, -1.1, glow, -0.77, 0)
         e = cv2.exp(neg_L)
         # (1 - e) * 255, saturating to uint8
         frame = cv2.convertScaleAbs(e, alpha=-255.0, beta=255.0)

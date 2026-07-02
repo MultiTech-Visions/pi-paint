@@ -160,6 +160,101 @@ class ContourTrace(Performer):
                        gain=0.5, width=0.55)
 
 
+class PerspectiveBox(Performer):
+    """A wireframe box breathing in and out of the surface — fake 3D.
+
+    The front face sits on the surface; the back face is shifted toward
+    a vanishing direction and shrunk, and the depth pulses so the box
+    seems to push out of and sink back into the wall.
+
+    `perspective` sets which way the depth recedes, so the illusion
+    matches the angle the surface is seen from:
+      "left"/"right"/"up"/"down" — the back of the box leans that way
+      "center" — recedes straight back (one-point, head-on)
+      "auto"   — recedes toward the canvas center (correct one-point
+                 perspective for a viewer facing the middle)
+    """
+
+    DIRECTIONS = {
+        "left": (-1.0, -0.22),
+        "right": (1.0, -0.22),
+        "up": (0.0, -1.0),
+        "down": (0.0, 1.0),
+        "center": (0.0, 0.0),
+    }
+
+    def __init__(self, surface, w, h, tempo=0.5, seed=0, perspective="auto"):
+        if surface and surface.get("bbox"):
+            x0, y0, x1, y1 = surface["bbox"]
+            self.cx, self.cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+            self.hw = float(np.clip((x1 - x0) * 0.26, 24, w * 0.17))
+            self.hh = float(np.clip((y1 - y0) * 0.26, 20, h * 0.17))
+        else:
+            self.cx, self.cy = w * 0.5, h * 0.5
+            self.hw, self.hh = w * 0.13, h * 0.16
+
+        if perspective in self.DIRECTIONS:
+            dx, dy = self.DIRECTIONS[perspective]
+        else:                       # auto: recede toward canvas center
+            dx, dy = w * 0.5 - self.cx, h * 0.5 - self.cy
+            if np.hypot(dx, dy) < 40:       # box at center — go head-on
+                dx, dy = 0.0, 0.0
+        n = np.hypot(dx, dy)
+        self.dir = (dx / n, dy / n) if n > 1e-6 else (0.0, 0.0)
+
+        self.max_shift = 0.85 * min(self.hw, self.hh)
+        self.rate = (0.25 + 0.45 * tempo) * 2 * np.pi / 6.0  # ~one breath / 6-13s
+        rng = np.random.default_rng(seed)
+        self.phase = rng.uniform(0, 6.28)
+        self.wobble_phase = rng.uniform(0, 6.28)
+        self.hue_off = rng.uniform(0, 1)
+        self._glint_next = 0.0
+        self._glint_rng = rng
+
+    def _corners(self, cx, cy, hw, hh):
+        return [(cx - hw, cy - hh), (cx + hw, cy - hh),
+                (cx + hw, cy + hh), (cx - hw, cy + hh)]
+
+    def step(self, canvas, dt, t):
+        # Depth breathes: never flat, never fully detached
+        d = 0.2 + 0.8 * (0.5 + 0.5 * np.sin(self.rate * t + self.phase))
+        # A slow, tiny sway of the vanishing direction keeps it alive
+        wob = 0.10 * np.sin(0.31 * t + self.wobble_phase)
+        c, s = np.cos(wob), np.sin(wob)
+        dx = self.dir[0] * c - self.dir[1] * s
+        dy = self.dir[0] * s + self.dir[1] * c
+
+        shift = self.max_shift * d
+        shrink = 1.0 - 0.38 * d
+        bx, by = self.cx + dx * shift, self.cy + dy * shift
+        front = self._corners(self.cx, self.cy, self.hw, self.hh)
+        back = self._corners(bx, by, self.hw * shrink, self.hh * shrink)
+
+        col_f = canvas.palette(self.hue_off)
+        col_b = canvas.palette(self.hue_off + 0.12)
+        # Back face dim (atmospheric depth), connectors fading toward
+        # the back, front face brightest — depth cues in light
+        for i in range(4):
+            canvas.glow_line(back[i], back[(i + 1) % 4], col_b, gain=0.16)
+        for i in range(4):
+            mid = ((front[i][0] + back[i][0]) * 0.5,
+                   (front[i][1] + back[i][1]) * 0.5)
+            canvas.glow_line(front[i], mid, col_b, gain=0.30)
+            canvas.glow_line(mid, back[i], col_b, gain=0.18)
+        for i in range(4):
+            canvas.glow_line(front[i], front[(i + 1) % 4], col_f, gain=0.38)
+        # Vertex glints
+        for p in front:
+            canvas.dab(p[0], p[1], col_f, gain=0.22, width=0.2)
+        # Now and then a corner sheds a spark
+        if t >= self._glint_next:
+            self._glint_next = t + self._glint_rng.uniform(2.0, 5.0)
+            p = front[int(self._glint_rng.integers(0, 4))]
+            pos = np.array([p], np.float32)
+            vel = self._glint_rng.normal(0, 14, (1, 2)).astype(np.float32)
+            canvas.motes(pos, vel, (col_f * 1.1)[None, :], life=(1.0, 2.2))
+
+
 class FishTank(Performer):
     """Fish swimming through a shared world — across every projector.
 
@@ -233,15 +328,19 @@ REGISTRY = {
     "fireflies": Fireflies,
     "contour_trace": ContourTrace,
     "fish_tank": FishTank,
+    "perspective_box": PerspectiveBox,
 }
 
 BEHAVIOR_NAMES = list(REGISTRY.keys())
+
+PERSPECTIVES = ["auto", "left", "right", "up", "down", "center"]
 
 
 def create(spec, surfaces, w, h, tempo=0.5, world=None, seed=0):
     """Build one performer from a director's behavior spec.
 
-    spec: {"type": name, "region": surface id or None}
+    spec: {"type": name, "region": surface id or None,
+           "perspective": optional, for perspective_box}
     Returns None for unknown types (a director hallucination, ignored).
     """
     cls = REGISTRY.get(spec.get("type"))
@@ -256,4 +355,7 @@ def create(spec, surfaces, w, h, tempo=0.5, world=None, seed=0):
     kwargs = {"tempo": tempo, "seed": seed}
     if cls is FishTank:
         kwargs["world"] = world
+    if cls is PerspectiveBox:
+        persp = spec.get("perspective", "auto")
+        kwargs["perspective"] = persp if persp in PERSPECTIVES else "auto"
     return cls(surface, w, h, **kwargs)

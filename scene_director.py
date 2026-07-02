@@ -32,7 +32,7 @@ import numpy as np
 import cv2
 
 from paint_canvas import MOOD_NAMES
-from performers import BEHAVIOR_NAMES
+from performers import BEHAVIOR_NAMES, PERSPECTIVES
 
 
 # ── Scene analysis ──────────────────────────────────────────────────────
@@ -187,10 +187,19 @@ class InstinctDirector:
                 behaviors.append({"type": "contour_trace", "region": textured["id"]})
             second = surfaces[1] if len(surfaces) > 1 else big
             behaviors.append({"type": "fireflies", "region": second["id"]})
-            small_bright = max(surfaces, key=lambda s: s["brightness"])
-            if small_bright["area_frac"] < 0.25:
-                behaviors.append({"type": "breathing_glow",
-                                  "region": small_bright["id"]})
+            # A compact, clean patch earns the 3D box illusion; otherwise
+            # the brightest small surface breathes instead
+            boxy = [s for s in surfaces
+                    if 0.04 < s["area_frac"] < 0.30 and s["edge_density"] < 0.05]
+            if boxy:
+                pick = min(boxy, key=lambda s: s["edge_density"])
+                behaviors.append({"type": "perspective_box",
+                                  "region": pick["id"], "perspective": "auto"})
+            else:
+                small_bright = max(surfaces, key=lambda s: s["brightness"])
+                if small_bright["area_frac"] < 0.25:
+                    behaviors.append({"type": "breathing_glow",
+                                      "region": small_bright["id"]})
         else:
             behaviors = [{"type": "aurora_drift", "region": None},
                          {"type": "fireflies", "region": None}]
@@ -201,7 +210,7 @@ class InstinctDirector:
             "theme": theme,
             "mood": mood,
             "tempo": tempo,
-            "behaviors": behaviors[:4],
+            "behaviors": behaviors[:5],
             "source": self.source,
             "notes": "",
         }
@@ -225,7 +234,11 @@ Respond with ONLY a JSON object:
 
 Pick 2-4 behaviors. Match them to what the surfaces are: dark expanses suit \
 fish_tank, distinct objects suit contour_trace, big open walls suit \
-aurora_drift, warm corners suit breathing_glow or fireflies."""
+aurora_drift, warm corners suit breathing_glow or fireflies, and a clean \
+patch suits perspective_box (a breathing 3D box illusion). A perspective_box \
+behavior may add "perspective": "left"|"right"|"up"|"down"|"center" — the \
+direction its depth recedes; pick what matches the angle that surface is \
+seen from (omit for auto, which recedes toward the canvas center)."""
 
 
 class VLMDirector:
@@ -336,7 +349,10 @@ class VLMDirector:
             region = b.get("region")
             if region not in valid_ids:
                 region = surfaces[0]["id"] if surfaces else None
-            behaviors.append({"type": b["type"], "region": region})
+            entry = {"type": b["type"], "region": region}
+            if b.get("perspective") in PERSPECTIVES:
+                entry["perspective"] = b["perspective"]
+            behaviors.append(entry)
         if not behaviors:
             raise ValueError("model chose no valid behaviors")
         try:
@@ -347,7 +363,7 @@ class VLMDirector:
             "theme": str(program.get("theme", ""))[:200] or "an untitled night",
             "mood": mood,
             "tempo": tempo,
-            "behaviors": behaviors[:4],
+            "behaviors": behaviors[:5],
             "source": self.source,
             "notes": "",
         }

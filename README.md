@@ -56,7 +56,7 @@ Two directors:
 - **Instinct** (default) — built-in CV rules, fully offline, zero setup. Dark expanses become aquariums, distinct objects get their silhouettes traced in light, big walls host auroras, warm corners breathe and spark.
 - **Local VLM** — point it at Ollama or any OpenAI-compatible server running a small vision model on the Pi (`moondream`, `llava-phi3`, `qwen2.5vl`). The model sees the scene photo plus the surface data and writes the program — including the theme line. Model output is validated against reality (hallucinated behaviors dropped, bad region ids remapped), and *any* failure falls back to instinct. The show always goes on.
 
-Performers: `aurora_drift`, `contour_trace` (light forever tracing the outline of a physical object it found), `fireflies`, `breathing_glow`, `fish_tank`.
+Performers: `aurora_drift`, `contour_trace` (light forever tracing the outline of a physical object it found), `fireflies`, `breathing_glow`, `fish_tank`, and `perspective_box` — a wireframe box whose depth breathes in and out of the surface, a fake-3D illusion you can throw on any wall. Its `perspective` option (`left`/`right`/`up`/`down`/`center`, default `auto`) sets which way the depth recedes, so the illusion matches the angle the surface is seen from — a box on the right side of the room should lean differently than one on the left. `auto` recedes toward the canvas center (correct one-point perspective for a viewer facing the middle); the VLM director can choose it per surface.
 
 ## Mesh — one world across many projectors
 
